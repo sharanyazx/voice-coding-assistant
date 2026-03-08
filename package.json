@@ -1,0 +1,114 @@
+{
+  "name": "voice-coding-assistant",
+  "displayName": "Voice Coding Assistant",
+  "description": "AI-powered voice coding assistant for accessibility — code entirely using voice commands. Supports Indian, American, British, and Australian English accents using Whisper speech recognition and OpenRouter AI.",
+  "version": "1.0.0",
+  "publisher": "voice-coding",
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "voice",
+    "coding",
+    "accessibility",
+    "speech",
+    "whisper",
+    "ai",
+    "hands-free"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "voice-coding-assistant.helloWorld",
+        "title": "Voice Coding: Hello World (Test)"
+      },
+      {
+        "command": "voice-coding-assistant.startListening",
+        "title": "Voice Coding: Start Listening"
+      },
+      {
+        "command": "voice-coding-assistant.stopListening",
+        "title": "Voice Coding: Stop Listening"
+      },
+      {
+        "command": "voice-coding-assistant.typeCommand",
+        "title": "Voice Coding: Type Command (Manual)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "voice-coding-assistant.startListening",
+        "key": "ctrl+shift+v",
+        "mac": "cmd+shift+v",
+        "when": "editorFocus"
+      },
+      {
+        "command": "voice-coding-assistant.stopListening",
+        "key": "ctrl+shift+x",
+        "mac": "cmd+shift+x"
+      },
+      {
+        "command": "voice-coding-assistant.typeCommand",
+        "key": "ctrl+shift+t",
+        "mac": "cmd+shift+t"
+      }
+    ],
+    "configuration": {
+      "title": "Voice Coding Assistant",
+      "properties": {
+        "voiceCodingAssistant.openRouterModel": {
+          "type": "string",
+          "default": "openai/gpt-3.5-turbo",
+          "description": "AI model to use via OpenRouter (e.g., openai/gpt-4, anthropic/claude-3-haiku, meta-llama/llama-3-8b-instruct)"
+        },
+        "voiceCodingAssistant.recordingDurationMs": {
+          "type": "number",
+          "default": 7000,
+          "description": "How long to record audio in milliseconds (default: 7000 = 7 seconds)"
+        },
+        "voiceCodingAssistant.whisperModel": {
+          "type": "string",
+          "default": "base",
+          "enum": [
+            "tiny",
+            "base",
+            "small",
+            "medium",
+            "large"
+          ],
+          "enumDescriptions": [
+            "Tiny (~39M) — Fastest, least accurate",
+            "Base (~74M) — Good balance for English",
+            "Small (~244M) — Better accent support",
+            "Medium (~769M) — Very good for all accents",
+            "Large (~1550M) — Best quality, slowest"
+          ],
+          "description": "Whisper model size. Larger = more accurate (especially for accents) but slower."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "axios": "^1.6.5",
+    "dotenv": "^16.3.1",
+    "node-record-lpcm16": "^1.0.1"
+  }
+}

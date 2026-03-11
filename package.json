@@ -2,7 +2,7 @@
   "name": "voice-coding-assistant",
   "displayName": "Voice Coding Assistant",
   "description": "AI-powered voice coding assistant for accessibility — code entirely using voice commands. Supports Indian, American, British, and Australian English accents using Whisper speech recognition and OpenRouter AI.",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "publisher": "voice-coding",
   "icon": "icon.png",
   "engines": {
@@ -10,7 +10,8 @@
   },
   "categories": [
     "Other",
-    "Programming Languages"
+    "Programming Languages",
+    "Machine Learning"
   ],
   "keywords": [
     "voice",
@@ -19,7 +20,9 @@
     "speech",
     "whisper",
     "ai",
-    "hands-free"
+    "hands-free",
+    "wake-word",
+    "text-to-speech"
   ],
   "activationEvents": [],
   "main": "./out/extension.js",
@@ -31,7 +34,7 @@
       },
       {
         "command": "voice-coding-assistant.startListening",
-        "title": "Voice Coding: Start Listening"
+        "title": "Voice Coding: Start Listening (Single Command)"
       },
       {
         "command": "voice-coding-assistant.stopListening",
@@ -40,6 +43,18 @@
       {
         "command": "voice-coding-assistant.typeCommand",
         "title": "Voice Coding: Type Command (Manual)"
+      },
+      {
+        "command": "voice-coding-assistant.startContinuous",
+        "title": "Voice Coding: Start Continuous Listening (Hands-Free)"
+      },
+      {
+        "command": "voice-coding-assistant.activateNow",
+        "title": "Voice Coding: Activate Now (Skip Wake Word)"
+      },
+      {
+        "command": "voice-coding-assistant.toggleVoiceFeedback",
+        "title": "Voice Coding: Toggle Voice Feedback (TTS)"
       }
     ],
     "keybindings": [
@@ -58,6 +73,16 @@
         "command": "voice-coding-assistant.typeCommand",
         "key": "ctrl+shift+t",
         "mac": "cmd+shift+t"
+      },
+      {
+        "command": "voice-coding-assistant.startContinuous",
+        "key": "ctrl+shift+c",
+        "mac": "cmd+shift+c"
+      },
+      {
+        "command": "voice-coding-assistant.activateNow",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a"
       }
     ],
     "configuration": {
@@ -65,13 +90,29 @@
       "properties": {
         "voiceCodingAssistant.openRouterModel": {
           "type": "string",
-          "default": "openai/gpt-3.5-turbo",
-          "description": "AI model to use via OpenRouter (e.g., openai/gpt-4, anthropic/claude-3-haiku, meta-llama/llama-3-8b-instruct)"
+          "default": "deepseek/deepseek-chat",
+          "enum": [
+            "deepseek/deepseek-chat",
+            "anthropic/claude-3.5-sonnet",
+            "openai/gpt-3.5-turbo",
+            "openai/gpt-4o",
+            "google/gemini-2.5-flash",
+            "meta-llama/llama-3.1-8b-instruct"
+          ],
+          "enumDescriptions": [
+            "DeepSeek Chat — Excellent for code generation, very cost-effective (recommended)",
+            "Claude 3.5 Sonnet — Premium code quality, higher cost",
+            "GPT-3.5 Turbo — Good balance of speed and quality",
+            "GPT-4o — Best overall quality, highest cost",
+            "Gemini 2.5 Flash — Google's fast model, good for code",
+            "LLaMA 3.1 8B — Open source, fast, free tier available"
+          ],
+          "description": "AI model to use via OpenRouter (deepseek/deepseek-chat recommended for coding)"
         },
         "voiceCodingAssistant.recordingDurationMs": {
           "type": "number",
           "default": 7000,
-          "description": "How long to record audio in milliseconds (default: 7000 = 7 seconds)"
+          "description": "Recording duration for active commands in ms (default: 7000)"
         },
         "voiceCodingAssistant.whisperModel": {
           "type": "string",
@@ -90,7 +131,26 @@
             "Medium (~769M) — Very good for all accents",
             "Large (~1550M) — Best quality, slowest"
           ],
-          "description": "Whisper model size. Larger = more accurate (especially for accents) but slower."
+          "description": "Whisper model size. Larger = more accurate for accents but slower."
+        },
+        "voiceCodingAssistant.voiceFeedbackEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable text-to-speech voice feedback (spoken confirmations)"
+        },
+        "voiceCodingAssistant.voiceFeedbackRate": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "maximum": 10,
+          "description": "Voice feedback speaking rate (0 = slow, 5 = normal, 10 = fast)"
+        },
+        "voiceCodingAssistant.voiceFeedbackVolume": {
+          "type": "number",
+          "default": 80,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Voice feedback volume (0 = silent, 100 = max)"
         }
       }
     }

@@ -31,6 +31,7 @@
 // ============================================================================
 
 import axios from 'axios';
+import { detectLanguage, getAIPromptContext } from './syntaxDetector';
 
 // ============================================================================
 // Types
@@ -134,8 +135,15 @@ export async function generateCode(
     console.log('[AIEngine] Model:', config.model);
     console.log('[AIEngine] Prompt:', prompt);
 
+    // Detect current language and add context
+    const langProfile = detectLanguage();
+    const langContext = getAIPromptContext(langProfile);
+    const systemPrompt = CODE_GENERATION_PROMPT + '\n\n' + langContext;
+
+    console.log('[AIEngine] Language:', langProfile.name);
+
     const messages: ChatMessage[] = [
-        { role: 'system', content: CODE_GENERATION_PROMPT },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: prompt },
     ];
 
@@ -211,15 +219,52 @@ export async function generateCodeConcept(
 ): Promise<AIResult> {
     console.log('[AIEngine] Generating', concept, ':', description);
 
-    let prompt = `Write a ${concept}`;
+    // Detect language for concept-specific generation
+    const langProfile = detectLanguage();
+    const langContext = getAIPromptContext(langProfile);
+
+    let prompt = `Write a ${concept} in ${langProfile.name}`;
     if (description) {
-        prompt += ` ${description}`;
+        prompt += `: ${description}`;
     }
+
+    // Add concept-specific hints
+    switch (concept) {
+        case 'function':
+            prompt += `\n\nUse this function declaration style: ${langProfile.syntaxRules.functionDeclaration}`;
+            prompt += `\nNaming convention: ${langProfile.namingConvention.functions}`;
+            break;
+        case 'class':
+            prompt += `\n\nUse this class declaration style: ${langProfile.syntaxRules.classDeclaration}`;
+            prompt += `\nNaming convention: ${langProfile.namingConvention.classes}`;
+            break;
+        case 'loop':
+            prompt += `\n\nFor loop template: ${langProfile.syntaxRules.forLoopSyntax}`;
+            prompt += `\nWhile loop template: ${langProfile.syntaxRules.whileLoopSyntax}`;
+            break;
+        case 'conditional':
+            prompt += `\n\nConditional style: ${langProfile.syntaxRules.conditionalSyntax}`;
+            break;
+        case 'error_handling':
+            prompt += `\n\nError handling style: ${langProfile.syntaxRules.errorHandling}`;
+            break;
+        case 'constructor':
+            prompt += `\n\nClass with constructor template: ${langProfile.templates.classWithConstructor}`;
+            break;
+    }
+
     if (existingCode) {
         prompt += `\n\nExisting code context:\n${existingCode}`;
     }
 
-    return generateCode(prompt, config);
+    const systemPrompt = CODE_GENERATION_PROMPT + '\n\n' + langContext;
+
+    const messages: ChatMessage[] = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: prompt },
+    ];
+
+    return callOpenRouter(messages, config);
 }
 
 // ============================================================================

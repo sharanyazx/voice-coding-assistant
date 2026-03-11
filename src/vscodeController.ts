@@ -528,3 +528,177 @@ export function showOutput(title: string, content: string): void {
     channel.appendLine('═'.repeat(60));
     channel.show();
 }
+
+// ============================================================================
+// DELETE FILE (with safety confirmation support)
+// ============================================================================
+
+/**
+ * Deletes a file from the workspace.
+ * The caller is responsible for confirming with the user first.
+ *
+ * @param fileName - Name of the file to delete
+ * @param confirmed - Whether the user has confirmed the deletion
+ * @returns true if deleted, false if not found or not confirmed
+ */
+export async function deleteFile(fileName: string, confirmed: boolean = false): Promise<boolean> {
+    if (!confirmed) {
+        // Let the caller handle confirmation
+        return false;
+    }
+
+    // Search for the file
+    const files = await vscode.workspace.findFiles(`**/${fileName}*`, '**/node_modules/**', 5);
+
+    if (files.length === 0) {
+        vscode.window.showWarningMessage(`⚠️ File not found: "${fileName}"`);
+        return false;
+    }
+
+    const targetFile = files[0];
+
+    try {
+        await vscode.workspace.fs.delete(targetFile);
+        vscode.window.showInformationMessage(`🗑️ Deleted: ${path.basename(targetFile.fsPath)}`);
+        return true;
+    } catch (err: any) {
+        vscode.window.showErrorMessage(`❌ Could not delete: ${err.message}`);
+        return false;
+    }
+}
+
+// ============================================================================
+// PROGRAM CONTROL
+// ============================================================================
+
+/**
+ * Stops all running terminals (kills running programs).
+ */
+export async function stopProgram(): Promise<void> {
+    const terminals = vscode.window.terminals;
+
+    if (terminals.length === 0) {
+        vscode.window.showInformationMessage('ℹ️ No active terminals to stop.');
+        return;
+    }
+
+    // Dispose all terminals
+    for (const terminal of terminals) {
+        terminal.dispose();
+    }
+
+    vscode.window.showInformationMessage(`⏹️ Stopped ${terminals.length} terminal(s).`);
+}
+
+/**
+ * Opens a new integrated terminal.
+ */
+export async function openTerminal(): Promise<void> {
+    const terminal = vscode.window.createTerminal('Voice Coding');
+    terminal.show();
+    vscode.window.showInformationMessage('💻 Terminal opened.');
+}
+
+// ============================================================================
+// ADVANCED NAVIGATION
+// ============================================================================
+
+/**
+ * Navigates to the next or previous function definition in the active file.
+ *
+ * Scans the file for function patterns:
+ *   Python: def function_name(
+ *   JavaScript/TypeScript: function name( / const name = (
+ *   Go: func name(
+ *   Java/C#: public/private/protected ... name(
+ *   General: any line containing 'function' or 'def '
+ *
+ * @param direction - 'next' or 'previous'
+ */
+export async function navigateToFunction(direction: 'next' | 'previous'): Promise<void> {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+        vscode.window.showWarningMessage('⚠️ No file is open.');
+        return;
+    }
+
+    const doc = editor.document;
+    const currentLine = editor.selection.active.line;
+
+    // Regex patterns for function definitions across languages
+    const functionPattern = /^[\s]*(def\s+\w+|function\s+\w+|func\s+\w+|(public|private|protected|static|async|export)\s+.*\w+\s*\(|const\s+\w+\s*=\s*(?:\(|async\s*\()|\w+\s*:\s*function)/;
+
+    let targetLine = -1;
+
+    if (direction === 'next') {
+        // Search downward from current line
+        for (let i = currentLine + 1; i < doc.lineCount; i++) {
+            if (functionPattern.test(doc.lineAt(i).text)) {
+                targetLine = i;
+                break;
+            }
+        }
+    } else {
+        // Search upward from current line
+        for (let i = currentLine - 1; i >= 0; i--) {
+            if (functionPattern.test(doc.lineAt(i).text)) {
+                targetLine = i;
+                break;
+            }
+        }
+    }
+
+    if (targetLine === -1) {
+        vscode.window.showInformationMessage(
+            `ℹ️ No ${direction} function found.`
+        );
+        return;
+    }
+
+    const position = new vscode.Position(targetLine, 0);
+    editor.selection = new vscode.Selection(position, position);
+    editor.revealRange(
+        new vscode.Range(position, position),
+        vscode.TextEditorRevealType.InCenter
+    );
+
+    const funcLine = doc.lineAt(targetLine).text.trim();
+    const displayName = funcLine.length > 50 ? funcLine.substring(0, 50) + '...' : funcLine;
+    vscode.window.showInformationMessage(
+        `${direction === 'next' ? '⏭️' : '⏮️'} Line ${targetLine + 1}: ${displayName}`
+    );
+}
+
+/**
+ * Searches for a symbol (variable, function, etc.) in the active file
+ * and moves the cursor to the first occurrence.
+ *
+ * @param searchTerm - The symbol name to find
+ */
+export async function findSymbol(searchTerm: string): Promise<void> {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+        vscode.window.showWarningMessage('⚠️ No file is open.');
+        return;
+    }
+
+    const text = editor.document.getText();
+    const regex = new RegExp(`\\b${searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    const match = regex.exec(text);
+
+    if (!match) {
+        vscode.window.showWarningMessage(`🔍 "${searchTerm}" not found in this file.`);
+        return;
+    }
+
+    const position = editor.document.positionAt(match.index);
+    editor.selection = new vscode.Selection(position, position);
+    editor.revealRange(
+        new vscode.Range(position, position),
+        vscode.TextEditorRevealType.InCenter
+    );
+
+    vscode.window.showInformationMessage(
+        `🔍 Found "${searchTerm}" at line ${position.line + 1}`
+    );
+}

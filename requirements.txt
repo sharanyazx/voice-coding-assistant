@@ -1,0 +1,14 @@
+# =============================================================
+# Voice Coding Assistant - Python Dependencies
+# =============================================================
+# These are required for the Whisper speech recognition engine.
+# Install with: pip install -r requirements.txt
+# =============================================================
+
+# OpenAI Whisper — Speech-to-text engine
+# Supports accents: Indian, American, British, Australian
+openai-whisper>=20230314
+
+# Required by Whisper (usually auto-installed, listed for completeness)
+torch>=1.10
+numpy

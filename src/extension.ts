@@ -5,34 +5,50 @@
 // This is the heart of the extension. VS Code calls activate() when the
 // extension starts and deactivate() when it shuts down.
 //
-// ARCHITECTURE OVERVIEW:
-//   ┌─────────────┐     ┌──────────────┐     ┌───────────────┐
-//   │  Microphone  │────▶│  SoX Record  │────▶│  WAV File     │
-//   └─────────────┘     └──────────────┘     └───────┬───────┘
-//                                                     │
-//                                                     ▼
-//   ┌─────────────┐     ┌──────────────┐     ┌───────────────┐
-//   │  VS Code     │◀───│  Command     │◀───│  Whisper STT  │
-//   │  Action      │    │  Parser      │    │  (Python)     │
-//   └──────┬──────┘     └──────────────┘     └───────────────┘
-//          │                    │
-//          │           ┌───────▼───────┐
-//          │           │  OpenRouter   │  (for code generation,
-//          └───────────│  AI Engine    │   debugging, fixes)
-//                      └───────────────┘
+// ARCHITECTURE OVERVIEW (Updated):
+//
+//   ┌─────────────┐
+//   │  Microphone  │
+//   └──────┬──────┘
+//          │
+//   ┌──────▼────────────────────────────────────────────────────┐
+//   │  Voice Mode Manager (voiceModeManager.ts)                 │
+//   │  ┌──────────────┐           ┌───────────────┐            │
+//   │  │ PASSIVE MODE │ wake word │  ACTIVE MODE  │            │
+//   │  │ (3s clips)   ├──────────▶│ (7s clips)    │            │
+//   │  │ Wake word    │◀──────────┤ Commands      │            │
+//   │  │ detection    │ deactivate│ processed     │            │
+//   │  └──────────────┘  or       └───────┬───────┘            │
+//   │                    timeout          │                     │
+//   └─────────────────────────────────────┼─────────────────────┘
+//                                         │
+//   ┌──────────────┐  ┌─────────▼────────┐  ┌───────────────┐
+//   │  Whisper STT │  │  Command Parser  │  │  AI Engine    │
+//   └──────────────┘  └────────┬─────────┘  └───────────────┘
+//                              │
+//   ┌──────────────┐  ┌───────▼──────────┐  ┌───────────────┐
+//   │  Voice TTS   │  │  VS Code         │  │  Safety       │
+//   │  Feedback    │◀─┤  Controller      │  │  Confirmation │
+//   └──────────────┘  └──────────────────┘  └───────────────┘
 //
 // COMMANDS REGISTERED:
-//   1. voice-coding-assistant.helloWorld     → Test that extension works
-//   2. voice-coding-assistant.startListening → Record & process voice command
-//   3. voice-coding-assistant.stopListening  → Stop recording (safety)
-//   4. voice-coding-assistant.typeCommand    → Type a command manually (fallback)
+//   1. voice-coding-assistant.helloWorld           → Test
+//   2. voice-coding-assistant.startListening       → Single voice command
+//   3. voice-coding-assistant.stopListening        → Stop recording
+//   4. voice-coding-assistant.typeCommand          → Manual text input
+//   5. voice-coding-assistant.startContinuous      → Continuous listening (passive)
+//   6. voice-coding-assistant.activateNow          → Activate immediately (active)
+//   7. voice-coding-assistant.toggleVoiceFeedback  → Toggle TTS on/off
 //
 // MODULES:
-//   voiceRecorder.ts     → Microphone recording via SoX
-//   speechToText.ts      → Audio → Text via Whisper
-//   commandParser.ts     → Text → Structured command
-//   aiEngine.ts          → AI code generation via OpenRouter
-//   vscodeController.ts  → Execute actions in VS Code
+//   voiceRecorder.ts      → Microphone recording via SoX
+//   speechToText.ts       → Audio → Text via Whisper
+//   commandParser.ts      → Text → Structured command
+//   aiEngine.ts           → AI code generation via OpenRouter
+//   vscodeController.ts   → Execute actions in VS Code
+//   wakeWordDetector.ts   → Detect activation/deactivation phrases   [NEW]
+//   voiceFeedback.ts      → Text-to-speech responses                 [NEW]
+//   voiceModeManager.ts   → Passive/Active listening state machine   [NEW]
 //
 // ============================================================================
 
@@ -42,21 +58,27 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as dotenv from 'dotenv';
 
-// Import our modules
-import { recordAudio, cleanupAudioFile, RecordingConfig } from './voiceRecorder';
+// Existing modules
+import { recordAudio, cleanupAudioFile } from './voiceRecorder';
 import { transcribeAudio, WhisperModelSize } from './speechToText';
 import { parseCommand, getCommandDescription, getLanguageExtension, CommandType, ParsedCommand } from './commandParser';
 import { generateCode, debugCode, fixError, generateCodeConcept, AIConfig } from './aiEngine';
 import * as controller from './vscodeController';
 
+// NEW modules
+import { checkWakeWord } from './wakeWordDetector';
+import * as voiceFeedback from './voiceFeedback';
+import * as modeManager from './voiceModeManager';
+import { getFormattedHelp } from './commandDictionary';
+
 // ============================================================================
 // Global State
 // ============================================================================
 
-/** Status bar item showing recording state */
+/** Status bar item showing recording/listening state */
 let statusBarItem: vscode.StatusBarItem;
 
-/** Whether we are currently recording */
+/** Whether we are currently in a single-shot recording */
 let isRecording = false;
 
 /** Maximum retry attempts for speech recognition fallback */
@@ -81,7 +103,7 @@ function getApiKey(): string | undefined {
 }
 
 // ============================================================================
-// Helper: Get AI Config from VS Code Settings
+// Helper: Get AI Config
 // ============================================================================
 
 function getAIConfig(): AIConfig | null {
@@ -98,13 +120,15 @@ function getAIConfig(): AIConfig | null {
     const config = vscode.workspace.getConfiguration('voiceCodingAssistant');
     return {
         apiKey,
-        model: config.get<string>('openRouterModel', 'openai/gpt-3.5-turbo'),
+        model: config.get<string>('openRouterModel', 'deepseek/deepseek-chat'),
     };
 }
 
 // ============================================================================
-// Status Bar
+// Status Bar (Updated for All Modes)
 // ============================================================================
+
+type StatusBarState = 'idle' | 'passive' | 'active' | 'recording' | 'processing' | 'error';
 
 function createStatusBar(): vscode.StatusBarItem {
     const item = vscode.window.createStatusBarItem(
@@ -117,16 +141,26 @@ function createStatusBar(): vscode.StatusBarItem {
     return item;
 }
 
-function updateStatusBar(item: vscode.StatusBarItem, state: 'idle' | 'recording' | 'processing' | 'error'): void {
+function updateStatusBar(item: vscode.StatusBarItem, state: StatusBarState): void {
     switch (state) {
         case 'idle':
             item.text = '$(mic) Voice Coding';
-            item.tooltip = 'Click to start voice coding (or use command palette)';
+            item.tooltip = 'Click to record a voice command. Or start continuous listening.';
             item.backgroundColor = undefined;
+            break;
+        case 'passive':
+            item.text = '$(eye) Passive — Say "Hey Coder"';
+            item.tooltip = 'Listening for wake word... Say "Hey Coder" to activate.';
+            item.backgroundColor = undefined;
+            break;
+        case 'active':
+            item.text = '$(pulse) ACTIVE — Listening';
+            item.tooltip = 'Voice coding ACTIVE. Speak your commands. Say "Stop" to deactivate.';
+            item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
             break;
         case 'recording':
             item.text = '$(pulse) Recording...';
-            item.tooltip = 'Listening for your voice command...';
+            item.tooltip = 'Recording your voice command...';
             item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
             break;
         case 'processing':
@@ -143,15 +177,12 @@ function updateStatusBar(item: vscode.StatusBarItem, state: 'idle' | 'recording'
 }
 
 // ============================================================================
-// Core: Execute a Parsed Command
+// Core: Execute a Parsed Command (Updated with new commands + voice feedback)
 // ============================================================================
 
 /**
  * Takes a parsed command and executes the corresponding VS Code action.
- * This is the central dispatch function.
- *
- * @param command - The parsed command from the command parser
- * @param aiConfig - AI configuration for commands that need AI
+ * Now includes voice feedback for every action.
  */
 async function executeCommand(command: ParsedCommand, aiConfig: AIConfig): Promise<void> {
     console.log('[VoiceCoding] Executing command:', command.type, command.params);
@@ -168,30 +199,77 @@ async function executeCommand(command: ParsedCommand, aiConfig: AIConfig): Promi
                 ? getLanguageExtension(command.params.language)
                 : '.py';
             await controller.createFile(fileName, ext);
+            voiceFeedback.speakAsync(`File ${fileName}${ext} created.`);
             break;
         }
 
         case CommandType.FILE_OPEN: {
             if (command.params.fileName) {
                 await controller.openFile(command.params.fileName);
+                voiceFeedback.speakAsync(`Opened ${command.params.fileName}.`);
             } else {
-                vscode.window.showWarningMessage('⚠️ Please specify a file name to open.');
+                vscode.window.showWarningMessage('⚠️ Please specify a file name.');
+                voiceFeedback.speakAsync('Please specify a file name to open.');
             }
             break;
         }
 
         case CommandType.FILE_SAVE: {
             await controller.saveFile();
+            voiceFeedback.speakAsync('File saved.');
             break;
         }
 
         case CommandType.FILE_CLOSE: {
             await controller.closeFile();
+            voiceFeedback.speakAsync('File closed.');
             break;
         }
 
         case CommandType.FILE_RUN: {
             await controller.runFile();
+            voiceFeedback.speakAsync('Running file.');
+            break;
+        }
+
+        // ================================================================
+        // FILE DELETE (with safety confirmation)
+        // ================================================================
+
+        case CommandType.FILE_DELETE: {
+            const fileToDelete = command.params.fileName;
+            if (!fileToDelete) {
+                voiceFeedback.speakAsync('Please specify a file name to delete.');
+                break;
+            }
+
+            // Safety confirmation
+            if (modeManager.getMode() === modeManager.VoiceMode.ACTIVE) {
+                // In continuous mode, use voice-based confirmation
+                const confirmed = await modeManager.requestConfirmation(
+                    `Are you sure you want to delete ${fileToDelete}? Say yes to confirm.`
+                );
+
+                if (confirmed) {
+                    await controller.deleteFile(fileToDelete, true);
+                    voiceFeedback.speakAsync(`${fileToDelete} deleted.`);
+                } else {
+                    voiceFeedback.speakAsync('Delete cancelled.');
+                }
+            } else {
+                // In single-shot mode, use VS Code dialog
+                const confirm = await vscode.window.showWarningMessage(
+                    `⚠️ Are you sure you want to delete "${fileToDelete}"?`,
+                    { modal: true },
+                    'Yes, Delete'
+                );
+                if (confirm === 'Yes, Delete') {
+                    await controller.deleteFile(fileToDelete, true);
+                    voiceFeedback.speakAsync(`${fileToDelete} deleted.`);
+                } else {
+                    voiceFeedback.speakAsync('Delete cancelled.');
+                }
+            }
             break;
         }
 
@@ -202,6 +280,30 @@ async function executeCommand(command: ParsedCommand, aiConfig: AIConfig): Promi
         case CommandType.NAVIGATE: {
             const line = command.params.lineNumber ?? 1;
             await controller.navigateToLine(line);
+            if (command.params.navTarget === 'top') {
+                voiceFeedback.speakAsync('Moved to top of file.');
+            } else if (command.params.navTarget === 'bottom') {
+                voiceFeedback.speakAsync('Moved to bottom of file.');
+            } else {
+                voiceFeedback.speakAsync(`Moved to line ${line}.`);
+            }
+            break;
+        }
+
+        case CommandType.NAVIGATE_FUNCTION: {
+            const direction = command.params.direction || 'next';
+            await controller.navigateToFunction(direction);
+            voiceFeedback.speakAsync(`Moved to ${direction} function.`);
+            break;
+        }
+
+        case CommandType.FIND_SYMBOL: {
+            if (command.params.searchTerm) {
+                await controller.findSymbol(command.params.searchTerm);
+                voiceFeedback.speakAsync(`Found ${command.params.searchTerm}.`);
+            } else {
+                voiceFeedback.speakAsync('Please specify what to find.');
+            }
             break;
         }
 
@@ -214,6 +316,8 @@ async function executeCommand(command: ParsedCommand, aiConfig: AIConfig): Promi
             const description = command.params.codeDescription || command.originalText;
             const existingCode = controller.getAllText() || undefined;
 
+            voiceFeedback.speakAsync(`Generating ${concept}.`);
+
             const result = await generateCodeConcept(
                 concept,
                 description,
@@ -225,6 +329,7 @@ async function executeCommand(command: ParsedCommand, aiConfig: AIConfig): Promi
             vscode.window.showInformationMessage(
                 `✅ Inserted ${concept}! (Model: ${result.model})`
             );
+            voiceFeedback.speakAsync(`${concept} inserted.`);
             break;
         }
 
@@ -235,13 +340,16 @@ async function executeCommand(command: ParsedCommand, aiConfig: AIConfig): Promi
         case CommandType.DEBUG: {
             const code = controller.getAllText();
             if (!code) {
-                vscode.window.showWarningMessage('⚠️ No file is open to debug.');
+                voiceFeedback.speakAsync('No file is open to debug.');
                 break;
             }
+
+            voiceFeedback.speakAsync('Analyzing code.');
 
             const result = await debugCode(code, aiConfig, command.params.lineNumber);
             controller.showOutput('Debug Analysis', result.code);
             vscode.window.showInformationMessage('🐛 Debug analysis ready — check Output panel.');
+            voiceFeedback.speakAsync('Debug analysis ready. Check the output panel.');
             break;
         }
 
@@ -252,25 +360,33 @@ async function executeCommand(command: ParsedCommand, aiConfig: AIConfig): Promi
         case CommandType.FIX_ERROR: {
             const codeToFix = controller.getAllText();
             if (!codeToFix) {
-                vscode.window.showWarningMessage('⚠️ No file is open to fix.');
+                voiceFeedback.speakAsync('No file is open to fix.');
                 break;
             }
 
+            voiceFeedback.speakAsync('Fixing error.');
+
             const fixResult = await fixError(codeToFix, aiConfig);
 
-            // Ask user before replacing
-            const confirm = await vscode.window.showInformationMessage(
-                '🔧 AI has generated a fix. Replace your code with the fixed version?',
-                'Yes, Apply Fix',
-                'Show in Output',
-                'Cancel'
-            );
-
-            if (confirm === 'Yes, Apply Fix') {
+            if (modeManager.getMode() === modeManager.VoiceMode.ACTIVE) {
+                // In continuous mode, auto-apply (user already said "fix")
                 await controller.replaceAllCode(fixResult.code);
+                voiceFeedback.speakAsync('Error fixed.');
                 vscode.window.showInformationMessage('✅ Error fixed!');
-            } else if (confirm === 'Show in Output') {
-                controller.showOutput('Fixed Code', fixResult.code);
+            } else {
+                const confirm = await vscode.window.showInformationMessage(
+                    '🔧 AI generated a fix. Apply it?',
+                    'Yes, Apply Fix',
+                    'Show in Output',
+                    'Cancel'
+                );
+
+                if (confirm === 'Yes, Apply Fix') {
+                    await controller.replaceAllCode(fixResult.code);
+                    voiceFeedback.speakAsync('Error fixed.');
+                } else if (confirm === 'Show in Output') {
+                    controller.showOutput('Fixed Code', fixResult.code);
+                }
             }
             break;
         }
@@ -282,8 +398,11 @@ async function executeCommand(command: ParsedCommand, aiConfig: AIConfig): Promi
         case CommandType.EDIT_RENAME: {
             if (command.params.oldName && command.params.newName) {
                 await controller.renameSymbol(command.params.oldName, command.params.newName);
+                voiceFeedback.speakAsync(
+                    `Renamed ${command.params.oldName} to ${command.params.newName}.`
+                );
             } else {
-                vscode.window.showWarningMessage('⚠️ Rename requires old and new names.');
+                voiceFeedback.speakAsync('Rename requires old and new names.');
             }
             break;
         }
@@ -302,11 +421,13 @@ async function executeCommand(command: ParsedCommand, aiConfig: AIConfig): Promi
             }
             if (folderName) {
                 await controller.createFolder(folderName);
+                voiceFeedback.speakAsync(`Folder ${folderName} created.`);
             }
             break;
         }
 
         case CommandType.PROJECT_CREATE: {
+            voiceFeedback.speakAsync('Select a location for the new project.');
             const folderUri = await vscode.window.showOpenDialog({
                 canSelectFolders: true,
                 canSelectFiles: false,
@@ -327,62 +448,209 @@ async function executeCommand(command: ParsedCommand, aiConfig: AIConfig): Promi
         case CommandType.IMPORT_MODULE: {
             if (command.params.moduleName) {
                 await controller.importModule(command.params.moduleName);
+                voiceFeedback.speakAsync(`${command.params.moduleName} imported.`);
             } else {
-                vscode.window.showWarningMessage('⚠️ Please specify a module name.');
+                voiceFeedback.speakAsync('Please specify a module name.');
             }
             break;
         }
 
         // ================================================================
-        // AI GENERATE (fallback for unrecognized commands)
+        // PROGRAM CONTROL (NEW)
+        // ================================================================
+
+        case CommandType.STOP_PROGRAM: {
+            await controller.stopProgram();
+            voiceFeedback.speakAsync('Program stopped.');
+            break;
+        }
+
+        case CommandType.OPEN_TERMINAL: {
+            await controller.openTerminal();
+            voiceFeedback.speakAsync('Terminal opened.');
+            break;
+        }
+
+        // ================================================================
+        // ADDITIONAL EDITOR COMMANDS
+        // ================================================================
+
+        case CommandType.SAVE_ALL: {
+            await vscode.workspace.saveAll();
+            vscode.window.showInformationMessage('💾 All files saved.');
+            voiceFeedback.speakAsync('All files saved.');
+            break;
+        }
+
+        case CommandType.REOPEN_FILE: {
+            await vscode.commands.executeCommand('workbench.action.reopenClosedEditor');
+            voiceFeedback.speakAsync('Reopened last closed file.');
+            break;
+        }
+
+        case CommandType.SWITCH_FILE: {
+            await vscode.commands.executeCommand('workbench.action.nextEditor');
+            voiceFeedback.speakAsync('Switched to next file.');
+            break;
+        }
+
+        case CommandType.UNDO: {
+            await vscode.commands.executeCommand('undo');
+            voiceFeedback.speakAsync('Undone.');
+            break;
+        }
+
+        case CommandType.REDO: {
+            await vscode.commands.executeCommand('redo');
+            voiceFeedback.speakAsync('Redone.');
+            break;
+        }
+
+        case CommandType.SELECT_ALL: {
+            await vscode.commands.executeCommand('editor.action.selectAll');
+            voiceFeedback.speakAsync('All text selected.');
+            break;
+        }
+
+        case CommandType.COPY: {
+            await vscode.commands.executeCommand('editor.action.clipboardCopyAction');
+            voiceFeedback.speakAsync('Copied.');
+            break;
+        }
+
+        case CommandType.PASTE: {
+            await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
+            voiceFeedback.speakAsync('Pasted.');
+            break;
+        }
+
+        case CommandType.SHOW_HELP: {
+            const helpText = getFormattedHelp();
+            controller.showOutput('Voice Commands Help', helpText);
+            vscode.window.showInformationMessage('❓ Voice commands help — check Output panel.');
+            voiceFeedback.speakAsync('Voice commands help is shown in the output panel.');
+            break;
+        }
+
+        // ================================================================
+        // LINE EDITING
+        // ================================================================
+
+        case CommandType.DELETE_LINE: {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor) {
+                voiceFeedback.speakAsync('No file is open.');
+                break;
+            }
+
+            const startLine = command.params.lineNumber;
+            const endLine = command.params.endLineNumber;
+
+            if (startLine && endLine) {
+                // Delete range: "delete lines 5 to 10"
+                const rangeStart = new vscode.Position(startLine - 1, 0);
+                const rangeEnd = new vscode.Position(endLine, 0);
+                await editor.edit(editBuilder => {
+                    editBuilder.delete(new vscode.Range(rangeStart, rangeEnd));
+                });
+                voiceFeedback.speakAsync(`Deleted lines ${startLine} to ${endLine}.`);
+            } else if (startLine) {
+                // Delete specific line: "delete line 5"
+                const lineIdx = startLine - 1;
+                const line = editor.document.lineAt(lineIdx);
+                const rangeStart = new vscode.Position(lineIdx, 0);
+                const rangeEnd = new vscode.Position(lineIdx + 1, 0);
+                await editor.edit(editBuilder => {
+                    editBuilder.delete(new vscode.Range(rangeStart, rangeEnd));
+                });
+                voiceFeedback.speakAsync(`Deleted line ${startLine}.`);
+            } else {
+                // Delete current line: "delete line"
+                await vscode.commands.executeCommand('editor.action.deleteLines');
+                voiceFeedback.speakAsync('Line deleted.');
+            }
+            break;
+        }
+
+        case CommandType.CUT_LINE: {
+            await vscode.commands.executeCommand('editor.action.cutLines');
+            voiceFeedback.speakAsync('Line cut.');
+            break;
+        }
+
+        case CommandType.DUPLICATE_LINE: {
+            await vscode.commands.executeCommand('editor.action.copyLinesDownAction');
+            voiceFeedback.speakAsync('Line duplicated.');
+            break;
+        }
+
+        // ================================================================
+        // AI GENERATE (fallback)
         // ================================================================
 
         case CommandType.AI_GENERATE: {
+            voiceFeedback.speakAsync('Generating code.');
             const result = await generateCode(command.originalText, aiConfig);
             await controller.insertCode(result.code);
             vscode.window.showInformationMessage(
                 `✅ Code generated! (Model: ${result.model})`
             );
+            voiceFeedback.speakAsync('Code generated and inserted.');
             break;
         }
 
         default: {
-            vscode.window.showWarningMessage(
-                `❓ Unknown command type: ${command.type}. Sending to AI...`
-            );
+            voiceFeedback.speakAsync('Sending to AI.');
             const fallback = await generateCode(command.originalText, aiConfig);
             await controller.insertCode(fallback.code);
+            voiceFeedback.speakAsync('Code generated.');
             break;
         }
     }
 }
 
 // ============================================================================
-// Core: Voice Recording → Transcription → Command → Action Pipeline
+// Command Handler for Continuous Listening Mode
 // ============================================================================
 
 /**
- * The main voice coding pipeline with safety fallback.
+ * This function is called by the VoiceModeManager when a command is
+ * transcribed in ACTIVE mode. It parses and executes the command.
  *
- * FLOW:
- *   1. Record audio from microphone via SoX
- *   2. Transcribe audio to text via Whisper
- *   3. If transcription fails or is empty → ask user to repeat (up to MAX_RETRY_ATTEMPTS)
- *   4. Show user what was heard, ask for confirmation
- *   5. Parse the transcribed text into a structured command
- *   6. Execute the command
- *
- * SAFETY FALLBACK:
- *   If speech recognition fails, the system will:
- *   - Notify the user with a clear error message
- *   - Offer to retry recording
- *   - After MAX_RETRY_ATTEMPTS, suggest using the manual text input
- *
- * @param context - VS Code extension context
+ * @param transcribedText - The transcribed voice text
+ */
+async function handleContinuousCommand(transcribedText: string): Promise<void> {
+    const aiConfig = getAIConfig();
+    if (!aiConfig) { return; }
+
+    console.log('[VoiceCoding] Continuous command:', transcribedText);
+
+    const command = parseCommand(transcribedText);
+    const description = getCommandDescription(command);
+
+    // Show what was heard in the status bar area
+    vscode.window.showInformationMessage(`🗣️ "${transcribedText}" → ${description}`);
+
+    try {
+        await executeCommand(command, aiConfig);
+    } catch (error: any) {
+        console.error('[VoiceCoding] Command error:', error);
+        vscode.window.showErrorMessage(`❌ Error: ${error.message}`);
+        voiceFeedback.speakAsync('An error occurred. Please try again.');
+    }
+}
+
+// ============================================================================
+// Single-Shot Voice Pipeline (preserved from original)
+// ============================================================================
+
+/**
+ * Single-shot voice recording: records once, transcribes, confirms, executes.
+ * This is the original flow preserved for users who don't want continuous listening.
  */
 async function startVoiceCodingPipeline(context: vscode.ExtensionContext): Promise<void> {
     if (isRecording) {
-        vscode.window.showWarningMessage('🎤 Already recording! Please wait...');
+        vscode.window.showWarningMessage('🎤 Already recording!');
         return;
     }
 
@@ -402,9 +670,6 @@ async function startVoiceCodingPipeline(context: vscode.ExtensionContext): Promi
             isRecording = true;
             updateStatusBar(statusBarItem, 'recording');
 
-            // ============================================================
-            // STEP 1: Record audio
-            // ============================================================
             await vscode.window.withProgress(
                 {
                     location: vscode.ProgressLocation.Notification,
@@ -421,42 +686,28 @@ async function startVoiceCodingPipeline(context: vscode.ExtensionContext): Promi
                         outputPath: audioFilePath,
                     });
 
-                    console.log('[VoiceCoding] Recording complete:', recording.sizeBytes, 'bytes');
-
-                    // ============================================================
-                    // STEP 2: Transcribe with Whisper
-                    // ============================================================
                     updateStatusBar(statusBarItem, 'processing');
                     progress.report({ message: 'Transcribing with Whisper...' });
 
                     const transcription = await transcribeAudio(audioFilePath, whisperModel);
 
-                    // ============================================================
-                    // SAFETY FALLBACK: Empty transcription
-                    // ============================================================
                     if (!transcription.text || transcription.text.trim().length === 0) {
                         attempts++;
+                        voiceFeedback.speakAsync('Could not detect speech. Please try again.');
                         if (attempts <= MAX_RETRY_ATTEMPTS) {
                             const retry = await vscode.window.showWarningMessage(
-                                `⚠️ Could not detect speech. (Attempt ${attempts}/${MAX_RETRY_ATTEMPTS + 1})\n\n` +
-                                `Please speak more clearly and try again.`,
-                                'Retry',
-                                'Type Command Instead',
-                                'Cancel'
+                                `⚠️ No speech detected. (Attempt ${attempts}/${MAX_RETRY_ATTEMPTS + 1})`,
+                                'Retry', 'Type Command', 'Cancel'
                             );
-
-                            if (retry === 'Retry') {
-                                return; // Continue the while loop
-                            } else if (retry === 'Type Command Instead') {
+                            if (retry === 'Retry') { return; }
+                            if (retry === 'Type Command') {
                                 await manualCommandInput(aiConfig);
                                 return;
                             }
                         } else {
                             const fallback = await vscode.window.showWarningMessage(
-                                `⚠️ Speech recognition failed after ${MAX_RETRY_ATTEMPTS + 1} attempts.\n\n` +
-                                `Would you like to type your command instead?`,
-                                'Type Command',
-                                'Cancel'
+                                `⚠️ Speech failed after ${MAX_RETRY_ATTEMPTS + 1} attempts.`,
+                                'Type Command', 'Cancel'
                             );
                             if (fallback === 'Type Command') {
                                 await manualCommandInput(aiConfig);
@@ -465,74 +716,45 @@ async function startVoiceCodingPipeline(context: vscode.ExtensionContext): Promi
                         return;
                     }
 
-                    // ============================================================
-                    // STEP 3: Confirm transcription with user
-                    // ============================================================
+                    // Parse and display
                     const parsedCommand = parseCommand(transcription.text);
                     const description = getCommandDescription(parsedCommand);
 
                     const userChoice = await vscode.window.showInformationMessage(
-                        `🗣️ Heard: "${transcription.text}"\n\n` +
-                        `Action: ${description}`,
-                        'Execute',
-                        'Retry Recording',
-                        'Type Instead',
-                        'Cancel'
+                        `🗣️ Heard: "${transcription.text}"\n\nAction: ${description}`,
+                        'Execute', 'Retry', 'Type Instead', 'Cancel'
                     );
 
                     if (userChoice === 'Execute') {
-                        // ============================================================
-                        // STEP 4: Execute the command
-                        // ============================================================
                         progress.report({ message: 'Executing command...' });
                         await executeCommand(parsedCommand, aiConfig);
                         updateStatusBar(statusBarItem, 'idle');
-                        return;
-
-                    } else if (userChoice === 'Retry Recording') {
+                    } else if (userChoice === 'Retry') {
                         attempts++;
-                        return; // Continue the while loop
-
                     } else if (userChoice === 'Type Instead') {
                         await manualCommandInput(aiConfig);
                         updateStatusBar(statusBarItem, 'idle');
-                        return;
-
                     } else {
-                        // Cancelled
-                        vscode.window.showInformationMessage('Voice coding cancelled.');
+                        vscode.window.showInformationMessage('Cancelled.');
                         updateStatusBar(statusBarItem, 'idle');
-                        return;
                     }
                 }
             );
 
-            // If we get here, the withProgress callback completed
-            // Check if we need to retry (attempts was incremented inside)
-            if (attempts > MAX_RETRY_ATTEMPTS) {
-                break;
-            }
+            if (attempts > MAX_RETRY_ATTEMPTS) { break; }
 
         } catch (error: any) {
-            console.error('[VoiceCoding] Pipeline error:', error);
+            console.error('[VoiceCoding] Error:', error);
             updateStatusBar(statusBarItem, 'error');
+            voiceFeedback.speakAsync('An error occurred.');
 
             const action = await vscode.window.showErrorMessage(
-                `❌ Voice Coding Error:\n\n${error.message}`,
-                'Retry',
-                'Type Command Instead',
-                'Cancel'
+                `❌ Error: ${error.message}`,
+                'Retry', 'Type Command', 'Cancel'
             );
-
-            if (action === 'Retry') {
-                attempts++;
-                continue;
-            } else if (action === 'Type Command Instead') {
-                await manualCommandInput(aiConfig);
-                break;
-            } else {
-                break;
-            }
+            if (action === 'Retry') { attempts++; continue; }
+            if (action === 'Type Command') { await manualCommandInput(aiConfig); }
+            break;
 
         } finally {
             isRecording = false;
@@ -544,30 +766,21 @@ async function startVoiceCodingPipeline(context: vscode.ExtensionContext): Promi
 }
 
 // ============================================================================
-// Fallback: Manual Text Input
+// Manual Text Input Fallback
 // ============================================================================
 
-/**
- * Allows the user to type a command manually instead of using voice.
- * This is the safety fallback when speech recognition fails.
- *
- * @param aiConfig - AI configuration for commands that need AI
- */
 async function manualCommandInput(aiConfig: AIConfig): Promise<void> {
     const input = await vscode.window.showInputBox({
-        prompt: '⌨️ Type your coding command (e.g., "create a python file", "go to line 10")',
+        prompt: '⌨️ Type your coding command',
         placeHolder: 'create a python file',
         ignoreFocusOut: true,
     });
 
-    if (!input || input.trim().length === 0) {
-        return;
-    }
+    if (!input || input.trim().length === 0) { return; }
 
     const command = parseCommand(input);
     const description = getCommandDescription(command);
-
-    vscode.window.showInformationMessage(`⌨️ Command: ${description}`);
+    vscode.window.showInformationMessage(`⌨️ ${description}`);
 
     try {
         await executeCommand(command, aiConfig);
@@ -580,19 +793,34 @@ async function manualCommandInput(aiConfig: AIConfig): Promise<void> {
 // Extension Activation
 // ============================================================================
 
-/**
- * Called by VS Code when the extension is activated.
- * Registers all commands and sets up the status bar.
- */
 export function activate(context: vscode.ExtensionContext) {
     console.log('[VoiceCoding] ✅ Extension activated!');
 
     // Load environment variables
     loadEnvFile(context.extensionPath);
 
-    // Create status bar item
+    // Load voice feedback settings
+    voiceFeedback.loadSettings();
+
+    // Create status bar
     statusBarItem = createStatusBar();
     context.subscriptions.push(statusBarItem);
+
+    // ── Set up Voice Mode Manager callbacks ────────────────────────
+    modeManager.onCommand(handleContinuousCommand);
+    modeManager.onModeChange((mode) => {
+        switch (mode) {
+            case modeManager.VoiceMode.PASSIVE:
+                updateStatusBar(statusBarItem, 'passive');
+                break;
+            case modeManager.VoiceMode.ACTIVE:
+                updateStatusBar(statusBarItem, 'active');
+                break;
+            case modeManager.VoiceMode.OFF:
+                updateStatusBar(statusBarItem, 'idle');
+                break;
+        }
+    });
 
     // ========================================================================
     // COMMAND 1: Hello World (test)
@@ -602,13 +830,17 @@ export function activate(context: vscode.ExtensionContext) {
         () => {
             vscode.window.showInformationMessage(
                 '🎤 Voice Coding Assistant is active!\n\n' +
-                'Use "Voice Coding: Start Listening" to begin, or click the mic in the status bar.'
+                'Commands:\n' +
+                '• "Start Listening" — Single voice command\n' +
+                '• "Start Continuous" — Continuous hands-free mode\n' +
+                '• "Type Command" — Manual text input'
             );
+            voiceFeedback.speakAsync('Voice coding assistant is ready.');
         }
     );
 
     // ========================================================================
-    // COMMAND 2: Start Listening (main command)
+    // COMMAND 2: Start Listening (single-shot)
     // ========================================================================
     const startCmd = vscode.commands.registerCommand(
         'voice-coding-assistant.startListening',
@@ -616,23 +848,27 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     // ========================================================================
-    // COMMAND 3: Stop Listening (safety)
+    // COMMAND 3: Stop Listening
     // ========================================================================
     const stopCmd = vscode.commands.registerCommand(
         'voice-coding-assistant.stopListening',
         () => {
-            if (isRecording) {
+            if (modeManager.isListening()) {
+                modeManager.stopAll();
+                voiceFeedback.speakAsync('Voice assistant stopped.');
+                updateStatusBar(statusBarItem, 'idle');
+            } else if (isRecording) {
                 isRecording = false;
                 updateStatusBar(statusBarItem, 'idle');
-                vscode.window.showInformationMessage('🛑 Voice recording stopped.');
+                vscode.window.showInformationMessage('🛑 Recording stopped.');
             } else {
-                vscode.window.showInformationMessage('ℹ️ Not currently recording.');
+                vscode.window.showInformationMessage('ℹ️ Not currently listening.');
             }
         }
     );
 
     // ========================================================================
-    // COMMAND 4: Type Command (manual fallback)
+    // COMMAND 4: Type Command (manual)
     // ========================================================================
     const typeCmd = vscode.commands.registerCommand(
         'voice-coding-assistant.typeCommand',
@@ -643,26 +879,72 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
+    // ========================================================================
+    // COMMAND 5: Start Continuous Listening (passive → active) [NEW]
+    // ========================================================================
+    const continuousCmd = vscode.commands.registerCommand(
+        'voice-coding-assistant.startContinuous',
+        async () => {
+            if (modeManager.isListening()) {
+                vscode.window.showInformationMessage(
+                    `ℹ️ Already listening in ${modeManager.getMode()} mode.`
+                );
+                return;
+            }
+            await modeManager.startPassiveListening();
+        }
+    );
+
+    // ========================================================================
+    // COMMAND 6: Activate Now (skip wake word) [NEW]
+    // ========================================================================
+    const activateCmd = vscode.commands.registerCommand(
+        'voice-coding-assistant.activateNow',
+        async () => {
+            await modeManager.activateNow();
+        }
+    );
+
+    // ========================================================================
+    // COMMAND 7: Toggle Voice Feedback [NEW]
+    // ========================================================================
+    const toggleFeedbackCmd = vscode.commands.registerCommand(
+        'voice-coding-assistant.toggleVoiceFeedback',
+        () => {
+            const current = voiceFeedback.isEnabled();
+            voiceFeedback.setEnabled(!current);
+            const state = !current ? 'ON' : 'OFF';
+            vscode.window.showInformationMessage(`🔊 Voice feedback: ${state}`);
+            if (!current) {
+                voiceFeedback.speakAsync('Voice feedback enabled.');
+            }
+        }
+    );
+
     // Register all commands
-    context.subscriptions.push(helloCmd, startCmd, stopCmd, typeCmd);
+    context.subscriptions.push(
+        helloCmd, startCmd, stopCmd, typeCmd,
+        continuousCmd, activateCmd, toggleFeedbackCmd
+    );
 
     console.log('[VoiceCoding] All commands registered:');
-    console.log('  - voice-coding-assistant.helloWorld');
-    console.log('  - voice-coding-assistant.startListening');
-    console.log('  - voice-coding-assistant.stopListening');
-    console.log('  - voice-coding-assistant.typeCommand');
+    console.log('  - helloWorld');
+    console.log('  - startListening (single-shot)');
+    console.log('  - stopListening');
+    console.log('  - typeCommand');
+    console.log('  - startContinuous (passive → active)');
+    console.log('  - activateNow (immediate active)');
+    console.log('  - toggleVoiceFeedback');
 }
 
 // ============================================================================
 // Extension Deactivation
 // ============================================================================
 
-/**
- * Called by VS Code when the extension is deactivated.
- * Clean up resources.
- */
 export function deactivate() {
     console.log('[VoiceCoding] Extension deactivated.');
+    modeManager.stopAll();
+    voiceFeedback.stopSpeaking();
     if (statusBarItem) {
         statusBarItem.dispose();
     }

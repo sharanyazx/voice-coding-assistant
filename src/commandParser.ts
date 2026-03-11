@@ -76,6 +76,57 @@ export enum CommandType {
     /** Import a module: "import os", "import module numpy" */
     IMPORT_MODULE = 'IMPORT_MODULE',
 
+    /** Delete a file: "delete file main.py" */
+    FILE_DELETE = 'FILE_DELETE',
+
+    /** Stop a running program: "stop program" */
+    STOP_PROGRAM = 'STOP_PROGRAM',
+
+    /** Open terminal: "open terminal" */
+    OPEN_TERMINAL = 'OPEN_TERMINAL',
+
+    /** Navigate to next/previous function: "next function" */
+    NAVIGATE_FUNCTION = 'NAVIGATE_FUNCTION',
+
+    /** Find/search for a symbol: "find variable count" */
+    FIND_SYMBOL = 'FIND_SYMBOL',
+
+    /** Save all files: "save all files" */
+    SAVE_ALL = 'SAVE_ALL',
+
+    /** Reopen last closed file: "reopen file" */
+    REOPEN_FILE = 'REOPEN_FILE',
+
+    /** Switch to another tab: "switch file" */
+    SWITCH_FILE = 'SWITCH_FILE',
+
+    /** Undo last action: "undo" */
+    UNDO = 'UNDO',
+
+    /** Redo last action: "redo" */
+    REDO = 'REDO',
+
+    /** Select all text: "select all" */
+    SELECT_ALL = 'SELECT_ALL',
+
+    /** Copy selection: "copy" */
+    COPY = 'COPY',
+
+    /** Paste: "paste" */
+    PASTE = 'PASTE',
+
+    /** Show help: "help", "show commands" */
+    SHOW_HELP = 'SHOW_HELP',
+
+    /** Delete line(s): "delete line", "delete line 5", "remove line" */
+    DELETE_LINE = 'DELETE_LINE',
+
+    /** Cut line: "cut line" */
+    CUT_LINE = 'CUT_LINE',
+
+    /** Duplicate line: "duplicate line", "copy line down" */
+    DUPLICATE_LINE = 'DUPLICATE_LINE',
+
     /** Fallback: send to AI for code generation */
     AI_GENERATE = 'AI_GENERATE',
 }
@@ -128,6 +179,15 @@ export interface CommandParams {
 
     /** Module name for IMPORT_MODULE */
     moduleName?: string;
+
+    /** Search term for FIND_SYMBOL */
+    searchTerm?: string;
+
+    /** Direction for NAVIGATE_FUNCTION: "next" or "previous" */
+    direction?: 'next' | 'previous';
+
+    /** End line number for range operations (e.g., DELETE_LINE range) */
+    endLineNumber?: number;
 }
 
 // ============================================================================
@@ -174,6 +234,82 @@ const LANGUAGE_EXTENSIONS: Record<string, string> = {
 };
 
 // ============================================================================
+// Spoken Number → Digit Conversion
+// ============================================================================
+
+/** Maps spoken number words to numeric values */
+const WORD_NUMBERS: Record<string, number> = {
+    'zero': 0, 'one': 1, 'two': 2, 'three': 3, 'four': 4,
+    'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9,
+    'ten': 10, 'eleven': 11, 'twelve': 12, 'thirteen': 13,
+    'fourteen': 14, 'fifteen': 15, 'sixteen': 16, 'seventeen': 17,
+    'eighteen': 18, 'nineteen': 19, 'twenty': 20, 'thirty': 30,
+    'forty': 40, 'fifty': 50, 'sixty': 60, 'seventy': 70,
+    'eighty': 80, 'ninety': 90, 'hundred': 100,
+    // Common Whisper mis-transcriptions
+    'to': 2, 'too': 2, 'for': 4, 'fore': 4, 'won': 1,
+    'ate': 8, 'tree': 3,
+    // Indian accent Whisper variations
+    'wan': 1, 'tow': 2, 'fife': 5, 'siks': 6,
+    'ait': 8, 'nain': 9, 'tin': 10, 'twinty': 20,
+    'thurty': 30, 'farty': 40, 'fifti': 50,
+};
+
+/**
+ * Converts a spoken number (word or digit) to a numeric value.
+ *
+ * Handles:
+ *   - Digits: "10" → 10
+ *   - Simple words: "two" → 2, "fifteen" → 15
+ *   - Compound: "twenty five" → 25, "thirty two" → 32
+ *   - With hyphens: "twenty-five" → 25
+ *
+ * @param text - The spoken number string
+ * @returns The numeric value, or NaN if not recognized
+ */
+function parseSpokenNumber(text: string): number {
+    const cleaned = text.trim().toLowerCase();
+
+    // If it's already a digit string, parse directly
+    if (/^\d+$/.test(cleaned)) {
+        return parseInt(cleaned, 10);
+    }
+
+    // Split on spaces or hyphens: "twenty five" → ["twenty", "five"]
+    const parts = cleaned.split(/[\s-]+/);
+
+    // Single word
+    if (parts.length === 1) {
+        return WORD_NUMBERS[parts[0]] ?? NaN;
+    }
+
+    // Two words: e.g. "twenty five" → 20 + 5 = 25
+    if (parts.length === 2) {
+        const first = WORD_NUMBERS[parts[0]];
+        const second = WORD_NUMBERS[parts[1]];
+        if (first !== undefined && second !== undefined) {
+            // Handle "one hundred" → 100
+            if (parts[1] === 'hundred') { return first * 100; }
+            return first + second;
+        }
+        // Maybe only the second part is a number
+        if (second !== undefined) { return second; }
+        if (first !== undefined) { return first; }
+    }
+
+    // Three words: e.g. "one hundred five" → 105
+    if (parts.length === 3) {
+        const first = WORD_NUMBERS[parts[0]];
+        const third = WORD_NUMBERS[parts[2]];
+        if (first !== undefined && parts[1] === 'hundred' && third !== undefined) {
+            return first * 100 + third;
+        }
+    }
+
+    return NaN;
+}
+
+// ============================================================================
 // Command Pattern Definitions
 // ============================================================================
 
@@ -196,12 +332,147 @@ interface CommandPattern {
 const COMMAND_PATTERNS: CommandPattern[] = [
 
     // ====================================================================
+    // HELP (must be very early — simple keywords that'd be eaten by others)
+    // ====================================================================
+
+    // "help" / "show commands" / "what can I say" / "list commands"
+    {
+        regex: /(?:^help$|show\s+commands|what\s+can\s+I\s+say|list\s+commands|voice\s+command\s+help)/i,
+        type: CommandType.SHOW_HELP,
+        extract: () => ({}),
+    },
+
+    // ====================================================================
+    // UNDO / REDO (must be before FILE_CLOSE so "undo close" works)
+    // ====================================================================
+
+    // "undo close" → REOPEN_FILE (must be before bare "undo")
+    {
+        regex: /(?:undo)\s+close/i,
+        type: CommandType.REOPEN_FILE,
+        extract: () => ({}),
+    },
+
+    // "undo" / "undo that" / "undo last"
+    {
+        regex: /^(?:undo)\s*(?:that|this|last)?$/i,
+        type: CommandType.UNDO,
+        extract: () => ({}),
+    },
+
+    // "redo" / "redo that" / "redo last"
+    {
+        regex: /^(?:redo)\s*(?:that|this|last)?$/i,
+        type: CommandType.REDO,
+        extract: () => ({}),
+    },
+
+    // ====================================================================
+    // LINE EDITING (must be before FILE_DELETE so "delete line" works)
+    // ====================================================================
+
+    // "delete line" / "delete line 5" / "remove line 5" / "delete lines 5 to 10"
+    // Also handles spoken numbers: "delete line five"
+    {
+        regex: /(?:delete|remove|erase)\s+lines?(?:\s+(\d+|\w+))?\s*(?:to|through|-)?\s*(\d+|\w+)?/i,
+        type: CommandType.DELETE_LINE,
+        extract: (match) => {
+            let lineNum: number | undefined;
+            let endNum: number | undefined;
+            if (match[1]) {
+                const n = parseSpokenNumber(match[1]);
+                lineNum = isNaN(n) ? undefined : n;
+            }
+            if (match[2]) {
+                const n = parseSpokenNumber(match[2]);
+                endNum = isNaN(n) ? undefined : n;
+            }
+            return {
+                lineNumber: lineNum,
+                endLineNumber: endNum,
+            };
+        },
+    },
+
+    // "cut line" / "cut this line"
+    {
+        regex: /(?:cut)\s+(?:this\s+)?line/i,
+        type: CommandType.CUT_LINE,
+        extract: () => ({}),
+    },
+
+    // "duplicate line" / "copy line down" / "duplicate this line"
+    {
+        regex: /(?:duplicate|clone|copy)\s+(?:this\s+)?line(?:\s+down)?/i,
+        type: CommandType.DUPLICATE_LINE,
+        extract: () => ({}),
+    },
+
+    // ====================================================================
+    // STOP PROGRAM (must be before FILE_RUN so "stop running" works)
+    // ====================================================================
+
+    // "stop program" / "stop running" / "kill process" / "stop execution"
+    {
+        regex: /(?:stop|kill|terminate|end)\s+(?:the\s+)?(?:program|process|running|execution|script)/i,
+        type: CommandType.STOP_PROGRAM,
+        extract: () => ({}),
+    },
+
+    // ====================================================================
+    // REOPEN FILE (must be before FILE_OPEN so "reopen" doesn't match "open")
+    // ====================================================================
+
+    // "reopen file" / "reopen last file"
+    {
+        regex: /(?:reopen|re-open)\s+(?:last\s+)?(?:file|tab)/i,
+        type: CommandType.REOPEN_FILE,
+        extract: () => ({}),
+    },
+
+    // ====================================================================
+    // OPEN TERMINAL (must be before FILE_OPEN so "open terminal" works)
+    // ====================================================================
+
+    // "open terminal" / "show terminal" / "new terminal"
+    {
+        regex: /(?:open|show|new|launch)\s+(?:a\s+)?(?:the\s+)?terminal/i,
+        type: CommandType.OPEN_TERMINAL,
+        extract: () => ({}),
+    },
+
+    // ====================================================================
+    // SAVE ALL (must be before FILE_SAVE so "save all" works)
+    // ====================================================================
+
+    // "save all files" / "save all" / "save everything"
+    {
+        regex: /(?:save)\s+(?:all)\s*(?:files|documents)?/i,
+        type: CommandType.SAVE_ALL,
+        extract: () => ({}),
+    },
+
+    // ====================================================================
     // FILE OPERATIONS
     // ====================================================================
 
+    // "create a c plus plus file" / "create a c sharp file" (multi-word languages)
+    {
+        regex: /(?:create|make|new)\s+(?:a\s+)?(c\s+plus\s+plus|c\s+sharp)\s+file(?:\s+(?:named?|called)\s+(\w+))?/i,
+        type: CommandType.FILE_CREATE,
+        extract: (match) => {
+            const langRaw = match[1].toLowerCase().replace(/\s+/g, ' ');
+            const explicitName = match[2];
+            return {
+                language: langRaw,
+                fileName: explicitName || 'main',
+            };
+        },
+    },
+
     // "create a python file" / "make a javascript file" / "create a typescript file named app"
     {
-        regex: /(?:create|make|new)\s+(?:a\s+)?(\w+)\s+file(?:\s+(?:named?|called)\s+(\w+))?/i,
+        regex: /(?:(?:please|kindly)\s+)?(?:(?:can|could)\s+(?:you\s+))?(?:create|make|new)\s+(?:a\s+)?(\w+)\s+file(?:\s+(?:named?|called)\s+(\w+))?/i,
         type: CommandType.FILE_CREATE,
         extract: (match) => {
             const langOrName = match[1].toLowerCase();
@@ -224,7 +495,7 @@ const COMMAND_PATTERNS: CommandPattern[] = [
 
     // "create a file called main" / "create file named calculator"
     {
-        regex: /(?:create|make|new)\s+(?:a\s+)?file\s+(?:named?|called)\s+(\w+)(?:\s+(?:in\s+)?(\w+))?/i,
+        regex: /(?:(?:please|kindly)\s+)?(?:(?:can|could)\s+(?:you\s+))?(?:create|make|new)\s+(?:a\s+)?file\s+(?:named?|called)\s+(\w+)(?:\s+(?:in\s+)?(\w+))?/i,
         type: CommandType.FILE_CREATE,
         extract: (match) => {
             const fileName = match[1];
@@ -236,9 +507,9 @@ const COMMAND_PATTERNS: CommandPattern[] = [
         },
     },
 
-    // "open file utils.py" / "open utils"
+    // "open file utils.py" / "open utils" (but NOT "open terminal")
     {
-        regex: /(?:open)\s+(?:file\s+)?(.+)/i,
+        regex: /(?:(?:please|kindly)\s+)?(?:open)\s+(?:file\s+)?(.+)/i,
         type: CommandType.FILE_OPEN,
         extract: (match) => ({
             fileName: match[1].trim(),
@@ -247,21 +518,21 @@ const COMMAND_PATTERNS: CommandPattern[] = [
 
     // "save file" / "save this" / "save"
     {
-        regex: /(?:save)\s*(?:file|this|the file|document)?/i,
+        regex: /(?:(?:please|kindly|do)\s+)?(?:save)\s*(?:file|this|the\s+file|document)?[.!]?$/i,
         type: CommandType.FILE_SAVE,
         extract: () => ({}),
     },
 
     // "close file" / "close this" / "close"
     {
-        regex: /(?:close)\s*(?:file|this|the file|tab|document)?/i,
+        regex: /(?:(?:please|kindly)\s+)?(?:close)\s*(?:file|this|the\s+file|tab|document)?[.!]?$/i,
         type: CommandType.FILE_CLOSE,
         extract: () => ({}),
     },
 
     // "run file" / "run this" / "execute file" / "run this file"
     {
-        regex: /(?:run|execute)\s*(?:this\s+)?(?:file|program|script|this|code)?/i,
+        regex: /(?:(?:please|kindly)\s+)?(?:run|execute)\s*(?:this\s+)?(?:file|program|script|this|code)?[.!]?$/i,
         type: CommandType.FILE_RUN,
         extract: () => ({}),
     },
@@ -269,16 +540,6 @@ const COMMAND_PATTERNS: CommandPattern[] = [
     // ====================================================================
     // NAVIGATION
     // ====================================================================
-
-    // "go to line 10" / "navigate to line 42" / "move to line 5"
-    {
-        regex: /(?:go\s+to|navigate\s+to|move\s+to|jump\s+to)\s+line\s+(\d+)/i,
-        type: CommandType.NAVIGATE,
-        extract: (match) => ({
-            lineNumber: parseInt(match[1], 10),
-            navTarget: match[1],
-        }),
-    },
 
     // "go to top" / "go to top of file" / "go to beginning"
     {
@@ -300,13 +561,39 @@ const COMMAND_PATTERNS: CommandPattern[] = [
         }),
     },
 
+    // "go to line 10" / "navigate to line 42" / "move to line two"
+    {
+        regex: /(?:go\s+to|navigate\s+to|move\s+to|jump\s+to)\s+line\s+(.+)/i,
+        type: CommandType.NAVIGATE,
+        extract: (match) => {
+            const num = parseSpokenNumber(match[1].replace(/[.!,]+$/, ''));
+            return {
+                lineNumber: isNaN(num) ? 1 : num,
+                navTarget: String(isNaN(num) ? 1 : num),
+            };
+        },
+    },
+
+    // "line 5" / "line two" / "line twenty five" (shorthand without "go to")
+    {
+        regex: /^line\s+(.+)$/i,
+        type: CommandType.NAVIGATE,
+        extract: (match) => {
+            const num = parseSpokenNumber(match[1].replace(/[.!,]+$/, ''));
+            return {
+                lineNumber: isNaN(num) ? 1 : num,
+                navTarget: String(isNaN(num) ? 1 : num),
+            };
+        },
+    },
+
     // ====================================================================
     // CODE INSERTION (sent to AI with context)
     // ====================================================================
 
     // "insert function to add two numbers" / "insert a function"
     {
-        regex: /(?:insert|add|write|create)\s+(?:a\s+)?function\s*(.*)/i,
+        regex: /(?:(?:please|kindly)\s+)?(?:insert|add|write|create)\s+(?:a\s+)?function\s*(.*)/i,
         type: CommandType.INSERT_CODE,
         extract: (match, text) => ({
             codeConcept: 'function',
@@ -315,8 +602,9 @@ const COMMAND_PATTERNS: CommandPattern[] = [
     },
 
     // "define variable" / "define a variable called x" / "create variable"
+    // Also handles Indian accent: "wariable" / "wariabul"
     {
-        regex: /(?:define|create|declare|add)\s+(?:a\s+)?variable\s*(.*)/i,
+        regex: /(?:(?:please|kindly)\s+)?(?:define|create|declare|add)\s+(?:a\s+)?(?:variable|wariable|wariabul)\s*(.*)/i,
         type: CommandType.INSERT_CODE,
         extract: (match, text) => ({
             codeConcept: 'variable',
@@ -326,7 +614,7 @@ const COMMAND_PATTERNS: CommandPattern[] = [
 
     // "create class" / "create a class called Animal"
     {
-        regex: /(?:create|define|add|make)\s+(?:a\s+)?class\s*(.*)/i,
+        regex: /(?:(?:please|kindly)\s+)?(?:create|define|add|make)\s+(?:a\s+)?class\s*(.*)/i,
         type: CommandType.INSERT_CODE,
         extract: (match, text) => ({
             codeConcept: 'class',
@@ -336,7 +624,7 @@ const COMMAND_PATTERNS: CommandPattern[] = [
 
     // "add constructor" / "create constructor"
     {
-        regex: /(?:add|create|insert|write)\s+(?:a\s+)?constructor\s*(.*)/i,
+        regex: /(?:(?:please|kindly)\s+)?(?:add|create|insert|write)\s+(?:a\s+)?constructor\s*(.*)/i,
         type: CommandType.INSERT_CODE,
         extract: (match, text) => ({
             codeConcept: 'constructor',
@@ -346,7 +634,7 @@ const COMMAND_PATTERNS: CommandPattern[] = [
 
     // "create loop" / "add for loop" / "add while loop"
     {
-        regex: /(?:create|add|insert|write)\s+(?:a\s+)?(?:for\s+|while\s+)?loop\s*(.*)/i,
+        regex: /(?:(?:please|kindly)\s+)?(?:create|add|insert|write)\s+(?:a\s+)?(?:for\s+|while\s+)?loop\s*(.*)/i,
         type: CommandType.INSERT_CODE,
         extract: (match, text) => ({
             codeConcept: 'loop',
@@ -356,7 +644,7 @@ const COMMAND_PATTERNS: CommandPattern[] = [
 
     // "add if condition" / "create if statement" / "add if else"
     {
-        regex: /(?:add|create|insert|write)\s+(?:a\s+|an\s+)?(?:if)\s*(?:condition|statement|else|block)?\s*(.*)/i,
+        regex: /(?:(?:please|kindly)\s+)?(?:add|create|insert|write)\s+(?:a\s+|an\s+)?(?:if)\s*(?:condition|statement|else|block)?\s*(.*)/i,
         type: CommandType.INSERT_CODE,
         extract: (match, text) => ({
             codeConcept: 'conditional',
@@ -376,7 +664,7 @@ const COMMAND_PATTERNS: CommandPattern[] = [
 
     // "add error handling" / "add try catch" / "add exception handling"
     {
-        regex: /(?:add|create|insert|write)\s+(?:a\s+)?(?:error\s+handling|try\s+catch|exception\s+handling|try\s+except)\s*(.*)/i,
+        regex: /(?:(?:please|kindly)\s+)?(?:add|create|insert|write)\s+(?:a\s+)?(?:error\s+handling|try\s+catch|exception\s+handling|try\s+except)\s*(.*)/i,
         type: CommandType.INSERT_CODE,
         extract: (match, text) => ({
             codeConcept: 'error_handling',
@@ -401,13 +689,16 @@ const COMMAND_PATTERNS: CommandPattern[] = [
     // DEBUGGING & ERROR FIXING
     // ====================================================================
 
-    // "debug error in line 15" / "debug line 10"
+    // "debug error in line 15" / "debug line ten" / "debug line 10"
     {
-        regex: /(?:debug|check|analyze)\s+(?:error\s+)?(?:in\s+|on\s+|at\s+)?line\s+(\d+)/i,
+        regex: /(?:debug|check|analyze)\s+(?:error\s+)?(?:in\s+|on\s+|at\s+)?line\s+(.+)/i,
         type: CommandType.DEBUG,
-        extract: (match) => ({
-            lineNumber: parseInt(match[1], 10),
-        }),
+        extract: (match) => {
+            const num = parseSpokenNumber(match[1].replace(/[.!,]+$/, ''));
+            return {
+                lineNumber: isNaN(num) ? 1 : num,
+            };
+        },
     },
 
     // "explain error" / "explain this error" / "what's the error"
@@ -457,6 +748,82 @@ const COMMAND_PATTERNS: CommandPattern[] = [
     {
         regex: /(?:create|make|start)\s+(?:a\s+)?(?:new\s+)?project/i,
         type: CommandType.PROJECT_CREATE,
+        extract: () => ({}),
+    },
+
+    // ====================================================================
+    // DELETE FILE (now after DELETE_LINE, so "delete line" is safe)
+    // ====================================================================
+
+    // "delete file main.py" / "remove file utils" / "delete main.py"
+    {
+        regex: /(?:delete|remove)\s+(?:file\s+)?(.+)/i,
+        type: CommandType.FILE_DELETE,
+        extract: (match) => ({
+            fileName: match[1].trim(),
+        }),
+    },
+
+    // ====================================================================
+    // ADVANCED NAVIGATION
+    // ====================================================================
+
+    // "next function" / "go to next function"
+    {
+        regex: /(?:next|go\s+to\s+next)\s+function/i,
+        type: CommandType.NAVIGATE_FUNCTION,
+        extract: () => ({
+            direction: 'next' as const,
+        }),
+    },
+
+    // "previous function" / "go to previous function"
+    {
+        regex: /(?:previous|prev|go\s+to\s+previous|go\s+to\s+prev|last)\s+function/i,
+        type: CommandType.NAVIGATE_FUNCTION,
+        extract: () => ({
+            direction: 'previous' as const,
+        }),
+    },
+
+    // "find variable count" / "find function add" / "search for class"
+    {
+        regex: /(?:find|search|search\s+for|locate)\s+(?:variable|function|class|method|symbol)?\s*(\w+)/i,
+        type: CommandType.FIND_SYMBOL,
+        extract: (match) => ({
+            searchTerm: match[1],
+        }),
+    },
+
+    // ====================================================================
+    // ADDITIONAL EDITOR COMMANDS
+    // ====================================================================
+
+    // "switch file" / "switch tab" / "next tab" / "next file"
+    {
+        regex: /(?:switch|next|previous|prev)\s+(?:file|tab)/i,
+        type: CommandType.SWITCH_FILE,
+        extract: () => ({}),
+    },
+
+    // "select all" / "select everything"
+    {
+        regex: /(?:select)\s+(?:all|everything)/i,
+        type: CommandType.SELECT_ALL,
+        extract: () => ({}),
+    },
+
+    // "copy" / "copy this" / "copy selection"
+    {
+        regex: /^(?:copy)\s*(?:this|selection|text)?$/i,
+        type: CommandType.COPY,
+        extract: () => ({}),
+    },
+
+    // "paste" / "paste here" / "paste text"
+    {
+        regex: /^(?:paste)\s*(?:here|text|this)?$/i,
+        type: CommandType.PASTE,
         extract: () => ({}),
     },
 ];
@@ -560,6 +927,45 @@ export function getCommandDescription(command: ParsedCommand): string {
             return `🚀 Create new project`;
         case CommandType.IMPORT_MODULE:
             return `📦 Import module: ${command.params.moduleName}`;
+        case CommandType.FILE_DELETE:
+            return `🗑️ Delete file: ${command.params.fileName}`;
+        case CommandType.STOP_PROGRAM:
+            return `⏹️ Stop running program`;
+        case CommandType.OPEN_TERMINAL:
+            return `💻 Open terminal`;
+        case CommandType.NAVIGATE_FUNCTION:
+            return `${command.params.direction === 'next' ? '⏭️' : '⏮️'} Go to ${command.params.direction} function`;
+        case CommandType.FIND_SYMBOL:
+            return `🔍 Find: "${command.params.searchTerm}"`;
+        case CommandType.SAVE_ALL:
+            return `💾 Save all files`;
+        case CommandType.REOPEN_FILE:
+            return `📂 Reopen last closed file`;
+        case CommandType.SWITCH_FILE:
+            return `🔄 Switch file/tab`;
+        case CommandType.UNDO:
+            return `↩️ Undo`;
+        case CommandType.REDO:
+            return `↪️ Redo`;
+        case CommandType.SELECT_ALL:
+            return `📋 Select all`;
+        case CommandType.COPY:
+            return `📄 Copy`;
+        case CommandType.PASTE:
+            return `📋 Paste`;
+        case CommandType.SHOW_HELP:
+            return `❓ Show voice commands help`;
+        case CommandType.DELETE_LINE:
+            if (command.params.lineNumber && command.params.endLineNumber) {
+                return `🗑️ Delete lines ${command.params.lineNumber} to ${command.params.endLineNumber}`;
+            } else if (command.params.lineNumber) {
+                return `🗑️ Delete line ${command.params.lineNumber}`;
+            }
+            return `🗑️ Delete current line`;
+        case CommandType.CUT_LINE:
+            return `✂️ Cut current line`;
+        case CommandType.DUPLICATE_LINE:
+            return `📋 Duplicate current line`;
         case CommandType.AI_GENERATE:
             return `🤖 AI Generate: "${command.originalText}"`;
         default:

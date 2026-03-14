@@ -60,7 +60,7 @@ import * as dotenv from 'dotenv';
 
 // Existing modules
 import { recordAudio, cleanupAudioFile } from './voiceRecorder';
-import { transcribeAudio, WhisperModelSize } from './speechToText';
+import { transcribeAudio, stopSTTService, getCapabilities } from './speechToText';
 import { parseCommand, getCommandDescription, getLanguageExtension, CommandType, ParsedCommand } from './commandParser';
 import { generateCode, debugCode, fixError, generateCodeConcept, AIConfig } from './aiEngine';
 import * as controller from './vscodeController';
@@ -659,7 +659,6 @@ async function startVoiceCodingPipeline(context: vscode.ExtensionContext): Promi
 
     const config = vscode.workspace.getConfiguration('voiceCodingAssistant');
     const recordingDuration = config.get<number>('recordingDurationMs', 7000);
-    const whisperModel = config.get<string>('whisperModel', 'base') as WhisperModelSize;
 
     let attempts = 0;
 
@@ -687,9 +686,9 @@ async function startVoiceCodingPipeline(context: vscode.ExtensionContext): Promi
                     });
 
                     updateStatusBar(statusBarItem, 'processing');
-                    progress.report({ message: 'Transcribing with Whisper...' });
+                    progress.report({ message: 'Transcribing with Deepgram...' });
 
-                    const transcription = await transcribeAudio(audioFilePath, whisperModel);
+                    const transcription = await transcribeAudio(audioFilePath);
 
                     if (!transcription.text || transcription.text.trim().length === 0) {
                         attempts++;
@@ -945,6 +944,7 @@ export function deactivate() {
     console.log('[VoiceCoding] Extension deactivated.');
     modeManager.stopAll();
     voiceFeedback.stopSpeaking();
+    stopSTTService();
     if (statusBarItem) {
         statusBarItem.dispose();
     }

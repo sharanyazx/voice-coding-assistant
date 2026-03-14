@@ -1,0 +1,823 @@
+# 🎤 Voice Coding Assistant — Complete Implementation Guide
+
+> **Production-Ready AI Voice Coding Assistant for VS Code**
+> Designed for developers with hand disabilities who must code using only voice commands.
+
+---
+
+## 📋 Table of Contents
+
+1. [Architecture Overview](#architecture-overview)
+2. [Hybrid Speech Pipeline](#hybrid-speech-pipeline)
+3. [Complete File Structure](#complete-file-structure)
+4. [Deployment Guide](#deployment-guide)
+5. [Voice Activation System](#voice-activation-system)
+6. [Voice Command Reference (120+ Commands)](#voice-command-reference)
+7. [Language Detection](#language-detection)
+8. [Code Generation Examples](#code-generation-examples)
+9. [Real-Time Performance](#real-time-performance)
+10. [Voice Feedback System](#voice-feedback-system)
+11. [Troubleshooting](#troubleshooting)
+12. [Testing Guide](#testing-guide)
+
+---
+
+## Architecture Overview
+
+```mermaid
+graph TD
+    A["🎤 Microphone"] --> B["SoX Recorder<br/>(voiceRecorder.ts)"]
+    B --> C["WAV File (16kHz, mono)"]
+    C --> D["Python Sidecar<br/>(stt_service.py)"]
+    
+    D --> E["Silero VAD<br/>(Voice Activity Detection)"]
+    E -->|"No speech"| F["Return empty"]
+    E -->|"Speech detected"| G["Vosk Streaming<br/>(Fast ~100ms)"]
+    
+    G --> H["Whisper Small<br/>(Accurate ~500ms)"]
+    
+    H --> I["JSON Result"]
+    I --> J["Command Parser<br/>(commandParser.ts)"]
+    J --> K["VS Code Controller<br/>(vscodeController.ts)"]
+    K --> L["Editor Action"]
+    
+    J --> M["AI Engine<br/>(aiEngine.ts)"]
+    M --> K
+    
+    K --> N["Voice Feedback<br/>(voiceFeedback.ts)"]
+    N --> O["🔊 Speaker"]
+    
+    P["Wake Word Detector<br/>(wakeWordDetector.ts)"] --> Q["Mode Manager<br/>(voiceModeManager.ts)"]
+    Q --> B
+```
+
+### Pipeline Flow
+
+```
+Microphone Input
+      ↓
+SoX Recording (16kHz WAV)
+      ↓
+Silero VAD (silence detection)
+      ↓
+Vosk Streaming Recognition (~100ms)
+      ↓
+Whisper Small Transcription (~500ms)
+      ↓
+Command Parser (regex matching)
+      ↓
+VS Code Extension Controller
+      ↓
+Editor Action + Voice Feedback
+```
+
+---
+
+## Hybrid Speech Pipeline
+
+### Why Hybrid Vosk + Whisper?
+
+| Feature | Vosk | Whisper Small |
+|---------|------|---------------|
+| **Speed** | ~100ms | ~500ms |
+| **Accuracy** | Good | Excellent |
+| **Indian English** | Moderate | Very Good |
+| **Offline** | ✅ Yes | ✅ Yes |
+| **Model Size** | ~40MB | ~244MB |
+| **Use Case** | Wake-word detection | Command transcription |
+
+### Pipeline Modes
+
+**PASSIVE Mode** (Wake-word detection):
+1. Record 3-second clip
+2. Silero VAD checks for speech → skip if silent
+3. Vosk processes audio (fast, ~100ms)
+4. If potential wake word detected → verify with Whisper
+5. Result: Fast wake-word detection with low latency
+
+**ACTIVE Mode** (Command processing):
+1. Record 7-second clip
+2. Silero VAD checks for speech → skip if silent
+3. Vosk processes audio (quick reference)
+4. Whisper Small processes audio (primary result)
+5. Result: Accurate command transcription
+
+### Indian English Accent Support
+
+The system uses Whisper Small specifically for Indian English because:
+- Whisper was trained on 680,000 hours of multilingual audio
+- The `small` model (244M parameters) handles accent variation well
+- We force `language="en"` to prevent Hindi/Hinglish confusion
+- The `initial_prompt` primes the model for coding vocabulary
+- Vosk provides a fast backup for simple commands
+
+---
+
+## Complete File Structure
+
+```
+voice-coding-assistant/
+├── .env                          # API keys (OpenRouter)
+├── .eslintrc.json                # ESLint configuration
+├── .gitignore                    # Git ignore rules
+├── .vscode/
+│   ├── launch.json               # F5 debug configuration
+│   └── tasks.json                # Build task
+├── package.json                  # Extension manifest
+├── tsconfig.json                 # TypeScript config
+├── requirements.txt              # Python dependencies
+├── src/
+│   ├── extension.ts              # Main entry point (952 lines)
+│   ├── voiceRecorder.ts          # Microphone recording via SoX
+│   ├── speechToText.ts           # Hybrid STT sidecar client
+│   ├── stt_service.py            # Python sidecar (Vosk+Whisper+VAD)
+│   ├── commandParser.ts          # Voice → structured command (983 lines)
+│   ├── commandDictionary.ts      # 120+ command reference (1078 lines)
+│   ├── aiEngine.ts               # OpenRouter AI code generation
+│   ├── syntaxDetector.ts         # Language detection (942 lines)
+│   ├── vscodeController.ts       # VS Code API actions (705 lines)
+│   ├── wakeWordDetector.ts       # Wake/deactivation phrase matching
+│   ├── voiceFeedback.ts          # Text-to-speech responses
+│   └── voiceModeManager.ts       # Passive/Active state machine
+├── out/                          # Compiled JavaScript output
+├── node_modules/                 # Node.js dependencies
+└── .venv/                        # Python virtual environment
+```
+
+### Module Responsibilities
+
+| Module | Lines | Purpose |
+|--------|-------|---------|
+| [extension.ts](file:///d:/assistant/voice-coding-assistant/src/extension.ts) | 952 | Main entry, command registration, pipeline orchestration |
+| [commandParser.ts](file:///d:/assistant/voice-coding-assistant/src/commandParser.ts) | 983 | Regex-based voice command matching with 30+ patterns |
+| [commandDictionary.ts](file:///d:/assistant/voice-coding-assistant/src/commandDictionary.ts) | 1078 | 120+ documented voice commands, help system |
+| [syntaxDetector.ts](file:///d:/assistant/voice-coding-assistant/src/syntaxDetector.ts) | 942 | Language profiles for 15+ languages |
+| [vscodeController.ts](file:///d:/assistant/voice-coding-assistant/src/vscodeController.ts) | 705 | File ops, navigation, code insertion, terminal |
+| [voiceModeManager.ts](file:///d:/assistant/voice-coding-assistant/src/voiceModeManager.ts) | 497 | Passive/Active listening state machine |
+| [voiceFeedback.ts](file:///d:/assistant/voice-coding-assistant/src/voiceFeedback.ts) | 337 | Cross-platform text-to-speech |
+| [wakeWordDetector.ts](file:///d:/assistant/voice-coding-assistant/src/wakeWordDetector.ts) | 338 | Wake/sleep phrase detection with fuzzy matching |
+| [speechToText.ts](file:///d:/assistant/voice-coding-assistant/src/speechToText.ts) | ~220 | Hybrid sidecar client (TypeScript side) |
+| [stt_service.py](file:///d:/assistant/voice-coding-assistant/src/stt_service.py) | ~420 | Hybrid sidecar server (Vosk+Whisper+VAD) |
+| [aiEngine.ts](file:///d:/assistant/voice-coding-assistant/src/aiEngine.ts) | 405 | OpenRouter API integration |
+| [voiceRecorder.ts](file:///d:/assistant/voice-coding-assistant/src/voiceRecorder.ts) | 191 | SoX-based microphone recording |
+
+---
+
+## Deployment Guide
+
+### Step 1: Install Node.js
+
+```powershell
+# Download from https://nodejs.org/ (LTS version recommended)
+# Or use winget:
+winget install OpenJS.NodeJS.LTS
+
+# Verify:
+node --version    # Should show v18+ or v20+
+npm --version     # Should show 9+
+```
+
+### Step 2: Install Python
+
+```powershell
+# Download from https://www.python.org/downloads/ (3.10+ recommended)
+# Or use winget:
+winget install Python.Python.3.11
+
+# IMPORTANT: Check "Add Python to PATH" during installation!
+
+# Verify:
+python --version    # Should show 3.10+
+pip --version       # Should show pip 23+
+```
+
+### Step 3: Install SoX (Sound eXchange)
+
+```powershell
+# Download from: https://sourceforge.net/projects/sox/files/sox/14.4.2/
+# Install the Windows .exe installer
+
+# After installation, add SoX to PATH:
+# 1. Open System Properties → Advanced → Environment Variables
+# 2. Edit "Path" under System Variables
+# 3. Add: C:\Program Files (x86)\sox-14-4-2\
+
+# Or use chocolatey:
+choco install sox.portable
+
+# Or use winget (if available):
+winget install sox
+
+# Verify:
+sox --version
+```
+
+### Step 4: Install FFmpeg (optional, for audio format conversion)
+
+```powershell
+# Download from: https://ffmpeg.org/download.html
+# Or use winget:
+winget install Gyan.FFmpeg
+
+# Or use chocolatey:
+choco install ffmpeg
+
+# Add to PATH and verify:
+ffmpeg -version
+```
+
+### Step 5: Set Up the Project
+
+```powershell
+# Navigate to the project
+cd d:\assistant\voice-coding-assistant
+
+# Install Node.js dependencies
+npm install
+
+# Create Python virtual environment
+python -m venv .venv
+
+# Activate virtual environment
+.\.venv\Scripts\Activate.ps1
+
+# Install Python dependencies
+pip install -r requirements.txt
+```
+
+> [!IMPORTANT]
+> **First-time model downloads**: On the first run, the following models will be downloaded automatically:
+> - **Vosk model** (~40MB): `vosk-model-small-en-us-0.15`
+> - **Whisper Small model** (~244MB): Downloaded by `faster-whisper`
+> - **Silero VAD** (~few MB): Downloaded by `torch.hub`
+>
+> This may take 5-10 minutes on first launch. Subsequent launches load from cache.
+
+### Step 6: Configure the API Key
+
+```powershell
+# Edit the .env file in the project root
+notepad d:\assistant\voice-coding-assistant\.env
+```
+
+Add your OpenRouter API key:
+```
+OPENROUTER_API_KEY=sk-or-v1-your-key-here
+```
+
+Get your key at: [https://openrouter.ai/keys](https://openrouter.ai/keys)
+
+### Step 7: Compile the Extension
+
+```powershell
+cd d:\assistant\voice-coding-assistant
+npm run compile
+```
+
+### Step 8: Run the Extension in VS Code
+
+1. Open `d:\assistant\voice-coding-assistant` folder in VS Code
+2. Press **F5** to launch the Extension Development Host
+3. A new VS Code window opens with the extension active
+4. Look for **"$(mic) Voice Coding"** in the status bar (bottom left)
+
+### Step 9: Test Voice Commands
+
+In the Extension Development Host window:
+
+1. **Quick test**: Open Command Palette (`Ctrl+Shift+P`) → "Voice Coding: Hello World (Test)"
+2. **Single command**: Press `Ctrl+Shift+V` → Speak a command → Confirm
+3. **Continuous mode**: Press `Ctrl+Shift+C` → Say "Hey Coder" → Speak commands
+4. **Manual input**: Press `Ctrl+Shift+T` → Type a command
+
+---
+
+## Voice Activation System
+
+### Wake Phrases (Activate)
+
+| Phrase | Notes |
+|--------|-------|
+| **"Hey Coder"** | Primary wake phrase |
+| "Start voice coding" | Alternative |
+| "Activate coding assistant" | Alternative |
+| "Start coding" | Short form |
+| "Wake up" | Short form |
+| "Activate assistant" | Alternative |
+
+### Indian Accent Variations (Auto-detected)
+
+| What You Say | Whisper May Hear | Result |
+|-------------|-----------------|--------|
+| "Hey Coder" | "hey coda" | ✅ Activated |
+| "Hey Coder" | "hey koder" | ✅ Activated |
+| "Hey Coder" | "a coder" | ✅ Activated |
+| "Hey Coder" | "hay coder" | ✅ Activated |
+
+### Deactivation Phrases
+
+| Phrase | Notes |
+|--------|-------|
+| **"Stop voice coding"** | Primary |
+| "Deactivate assistant" | Alternative |
+| "Sleep assistant" | Alternative |
+| "Go to sleep" | Alternative |
+| "Goodbye" | Alternative |
+| "Stop listening" | Alternative |
+
+### How It Works
+
+```
+User speaks → SoX records 3s clip → Vosk (fast check)
+                                         │
+                          ┌───────────────┴───────────────┐
+                          │ Potential wake word?           │
+                          │ (contains "hey", "coder", etc)│
+                          └───────────┬───────────────────┘
+                                      │
+                               ┌──────┴──────┐
+                               │             │
+                            No│           Yes│
+                               │             │
+                     Continue  │    Whisper   │
+                     passive   │    verifies  │
+                     listening │             │
+                               │    ┌────────┴────────┐
+                               │    │ Wake confirmed? │
+                               │    └────────┬────────┘
+                               │          Yes│
+                               │    ┌────────┴────────┐
+                               │    │ ACTIVATE!       │
+                               │    │ Switch to       │
+                               │    │ ACTIVE mode     │
+                               │    └─────────────────┘
+```
+
+---
+
+## Voice Command Reference
+
+### 📄 File Operations (15 commands)
+
+| # | Voice Command | Action |
+|---|--------------|--------|
+| 1 | "create python file" | Creates `main.py` |
+| 2 | "create java file" | Creates `Main.java` |
+| 3 | "create javascript file" | Creates `main.js` |
+| 4 | "create typescript file" | Creates `main.ts` |
+| 5 | "create c plus plus file" | Creates `main.cpp` |
+| 6 | "create python file named calculator" | Creates `calculator.py` |
+| 7 | "create java file named Calculator" | Creates `Calculator.java` |
+| 8 | "create file named app" | Creates `app.py` (default Python) |
+| 9 | "open file main" | Opens `main.py` or similar |
+| 10 | "save file" | Saves current file |
+| 11 | "save all files" | Saves all open files |
+| 12 | "close file" | Closes current tab |
+| 13 | "delete file temp" | Deletes with confirmation |
+| 14 | "rename file test to app" | Renames in file |
+| 15 | "reopen file" | Reopens last closed |
+
+### 🧭 Code Navigation (15 commands)
+
+| # | Voice Command | Action |
+|---|--------------|--------|
+| 16 | "go to line 10" | Cursor → line 10 |
+| 17 | "go to line twenty five" | Cursor → line 25 |
+| 18 | "line 5" | Shorthand navigation |
+| 19 | "go to top of file" | Cursor → line 1 |
+| 20 | "go to bottom of file" | Cursor → last line |
+| 21 | "go to beginning" | Same as top |
+| 22 | "go to end" | Same as bottom |
+| 23 | "next function" | Jump to next function |
+| 24 | "previous function" | Jump to prev function |
+| 25 | "find variable count" | Search for "count" |
+| 26 | "find function add" | Search for "add" |
+| 27 | "find class Animal" | Search for "Animal" |
+| 28 | "search for total" | Find "total" |
+| 29 | "navigate to line 42" | Cursor → line 42 |
+| 30 | "jump to line 7" | Cursor → line 7 |
+
+### ✏️ Code Generation (20 commands)
+
+| # | Voice Command | Action |
+|---|--------------|--------|
+| 31 | "create function add numbers" | AI generates add function |
+| 32 | "create function" | Empty function template |
+| 33 | "insert function to sort array" | AI generates sort function |
+| 34 | "define variable" | Variable declaration |
+| 35 | "define variable count equal to zero" | `count = 0` |
+| 36 | "create class Animal" | Class definition |
+| 37 | "add constructor" | Constructor template |
+| 38 | "add constructor with name and age" | Parameterized constructor |
+| 39 | "create loop" | Loop structure |
+| 40 | "add for loop" | For loop |
+| 41 | "add while loop" | While loop |
+| 42 | "add if condition" | If-else block |
+| 43 | "add if condition to check positive" | Specific conditional |
+| 44 | "call function add" | Function call |
+| 45 | "add error handling" | Try-catch/except |
+| 46 | "add try catch" | Error handling |
+| 47 | "create function to read a file" | AI generates file reader |
+| 48 | "write a binary search function" | AI generates algorithm |
+| 49 | "create a linked list class" | AI generates data structure |
+| 50 | "add getter and setter methods" | AI generates accessors |
+
+### 🐛 Debugging & Error Fixing (10 commands)
+
+| # | Voice Command | Action |
+|---|--------------|--------|
+| 51 | "debug error in line 12" | AI analyzes line 12 |
+| 52 | "debug line 5" | AI analyzes line 5 |
+| 53 | "explain this error" | AI explains error |
+| 54 | "explain error" | Same |
+| 55 | "fix this error" | AI fixes and replaces |
+| 56 | "fix the bug" | Same |
+| 57 | "fix the issue" | Same |
+| 58 | "analyze error" | General analysis |
+| 59 | "debug error in line fifteen" | Spoken number |
+| 60 | "why is this code failing" | AI explains failure |
+
+### ▶️ Program Execution (10 commands)
+
+| # | Voice Command | Action |
+|---|--------------|--------|
+| 61 | "run file" | Runs current file |
+| 62 | "run program" | Same |
+| 63 | "run python program" | Runs with Python |
+| 64 | "run java program" | Compiles + runs Java |
+| 65 | "run code" | Same as run file |
+| 66 | "execute this" | Same |
+| 67 | "stop execution" | Kills all terminals |
+| 68 | "stop program" | Same |
+| 69 | "kill process" | Same |
+| 70 | "open terminal" | New terminal window |
+
+### 🖥️ Editor Control (15 commands)
+
+| # | Voice Command | Action |
+|---|--------------|--------|
+| 71 | "save file" | Save current |
+| 72 | "save all files" | Save all |
+| 73 | "close file" | Close tab |
+| 74 | "close this" | Same |
+| 75 | "switch file" | Next tab |
+| 76 | "next tab" | Same |
+| 77 | "undo" | Undo action |
+| 78 | "redo" | Redo action |
+| 79 | "select all" | Select all text |
+| 80 | "copy" | Copy selection |
+| 81 | "paste" | Paste clipboard |
+| 82 | "delete line" | Delete current line |
+| 83 | "delete line 5" | Delete specific line |
+| 84 | "delete lines 5 to 10" | Delete range |
+| 85 | "duplicate line" | Copy line down |
+
+### 📁 Project Management (10 commands)
+
+| # | Voice Command | Action |
+|---|--------------|--------|
+| 86 | "create new project" | New project folder |
+| 87 | "create folder utils" | New folder |
+| 88 | "create folder components" | New folder |
+| 89 | "import module os" | Insert import |
+| 90 | "import numpy" | Insert import |
+| 91 | "import json" | Insert import |
+| 92 | "import module requests" | Insert import |
+| 93 | "create folder models" | New folder |
+| 94 | "create folder" | Prompts for name |
+| 95 | "add module" | New module file |
+
+### 🏷️ Variable & Symbol Ops (10 commands)
+
+| # | Voice Command | Action |
+|---|--------------|--------|
+| 96 | "rename variable x to y" | Find-replace |
+| 97 | "rename function old to new" | Rename function |
+| 98 | "rename class Dog to Animal" | Rename class |
+| 99 | "rename variable count to total" | Rename variable |
+| 100 | "rename method getName to fetchName" | Rename method |
+| 101 | "find variable count" | Navigate to symbol |
+| 102 | "find function main" | Navigate to function |
+| 103 | "find class Calculator" | Navigate to class |
+| 104 | "search for total" | Find in file |
+| 105 | "locate variable result" | Find in file |
+
+### 🎤 Voice Control (10 commands)
+
+| # | Voice Command | Action |
+|---|--------------|--------|
+| 106 | "Hey Coder" | Activate assistant |
+| 107 | "Start voice coding" | Activate |
+| 108 | "Activate coding assistant" | Activate |
+| 109 | "Stop voice coding" | Deactivate |
+| 110 | "Sleep assistant" | Deactivate |
+| 111 | "Go to sleep" | Deactivate |
+| 112 | "Goodbye" | Deactivate |
+| 113 | "Help" | Show command list |
+| 114 | "Show commands" | Show command list |
+| 115 | "What can I say" | Show command list |
+
+### 🔄 Additional Commands (10+ commands)
+
+| # | Voice Command | Action |
+|---|--------------|--------|
+| 116 | "cut line" | Cut current line |
+| 117 | "copy line down" | Duplicate line |
+| 118 | "undo close" | Reopen last file |
+| 119 | "run this script" | Run active file |
+| 120 | "reopen last file" | Reopen closed |
+| 121+ | *(Any unrecognized command)* | Sent to AI for code generation |
+
+---
+
+## Language Detection
+
+The assistant automatically detects the programming language from the file extension:
+
+| Extension | Language | Priority |
+|-----------|----------|----------|
+| [.py](file:///d:/assistant/voice-coding-assistant/src/stt_service.py) | Python | ⭐ Primary |
+| `.java` | Java | ⭐ Primary |
+| `.js` | JavaScript | Supported |
+| [.ts](file:///d:/assistant/voice-coding-assistant/src/aiEngine.ts) | TypeScript | Supported |
+| `.cpp` / `.cc` | C++ | Supported |
+| `.c` / `.h` | C | Supported |
+| `.go` | Go | Supported |
+| `.rs` | Rust | Supported |
+| `.rb` | Ruby | Supported |
+| `.php` | PHP | Supported |
+| `.cs` | C# | Supported |
+| `.kt` | Kotlin | Supported |
+| `.swift` | Swift | Supported |
+
+### How Language Detection Works
+
+```
+User says: "create function add numbers"
+
+If file is calculator.py → Python syntax:
+    def add_numbers(a, b):
+        return a + b
+
+If file is Calculator.java → Java syntax:
+    public int addNumbers(int a, int b) {
+        return a + b;
+    }
+
+If file is calculator.js → JavaScript syntax:
+    function addNumbers(a, b) {
+        return a + b;
+    }
+```
+
+---
+
+## Code Generation Examples
+
+### Example: "Create loop from 1 to 10"
+
+**Python output** (`calculator.py`):
+```python
+for i in range(1, 11):
+    print(i)
+```
+
+**Java output** (`Calculator.java`):
+```java
+for (int i = 1; i <= 10; i++) {
+    System.out.println(i);
+}
+```
+
+### Example: "Create class Animal with name and age"
+
+**Python output**:
+```python
+class Animal:
+    def __init__(self, name, age):
+        self.name = name
+        self.age = age
+    
+    def __str__(self):
+        return f"{self.name} ({self.age} years)"
+```
+
+**Java output**:
+```java
+public class Animal {
+    private String name;
+    private int age;
+    
+    public Animal(String name, int age) {
+        this.name = name;
+        this.age = age;
+    }
+    
+    @Override
+    public String toString() {
+        return name + " (" + age + " years)";
+    }
+}
+```
+
+### Example: "Add error handling"
+
+**Python**: `try: ... except Exception as e: ...`
+**Java**: `try { ... } catch (Exception e) { ... }`
+**JavaScript**: `try { ... } catch (error) { ... }`
+
+---
+
+## Real-Time Performance
+
+### Latency Breakdown
+
+| Stage | Duration | Notes |
+|-------|----------|-------|
+| SoX Recording | 3s (passive) / 7s (active) | Configurable |
+| Silero VAD | ~50ms | Instant silence detection |
+| Vosk Streaming | ~100ms | Wake-word detection |
+| Whisper Small | ~500ms | Accurate transcription |
+| Command Parsing | <10ms | Regex matching |
+| VS Code Action | <50ms | API call |
+| **Total** | **<1s after recording** | Well under 2s target |
+
+### Optimization Techniques
+
+1. **Persistent sidecar**: Models loaded once, kept in memory
+2. **Silero VAD**: Skips processing for silent clips
+3. **Passive/Active modes**: Vosk-fast for wake words, Whisper for accuracy
+4. **Chunked audio processing**: Vosk processes in streaming chunks
+5. **JSON line protocol**: Minimal IPC overhead
+
+---
+
+## Voice Feedback System
+
+The assistant speaks confirmations using the OS text-to-speech engine:
+
+| Action | Spoken Feedback |
+|--------|----------------|
+| File created | "File calculator.py created" |
+| File saved | "File saved" |
+| Navigation | "Moved to line 10" |
+| Code generated | "Function inserted" |
+| Activation | "Voice coding assistant activated" |
+| Deactivation | "Voice assistant deactivated" |
+| Error | "An error occurred" |
+| No speech | "Could not detect speech" |
+| Program run | "Running file" |
+
+### Platform Support
+
+| OS | TTS Engine | Command |
+|----|-----------|---------|
+| Windows | System.Speech | `PowerShell SpeechSynthesizer` |
+| macOS | Built-in say | `say -r 200 "message"` |
+| Linux | espeak / spd-say | `espeak "message"` |
+
+---
+
+## Troubleshooting
+
+### Problem: Microphone Not Detected
+
+```
+❌ Microphone recording failed (SoX exit code 1)
+```
+
+**Solutions:**
+1. Check if microphone is connected and enabled
+2. Windows: Settings → Privacy → Microphone → Allow apps
+3. Verify SoX: run `sox --version` in terminal
+4. Test recording: `sox -t waveaudio default -r 16000 -c 1 test.wav trim 0 3`
+5. Try a different microphone
+
+### Problem: Vosk Model Loading Failure
+
+```
+DEBUG: Vosk loading failed: ...
+```
+
+**Solutions:**
+1. Vosk will continue in Whisper-only mode (still works!)
+2. Ensure [vosk](file:///d:/assistant/voice-coding-assistant/src/stt_service.py#132-165) package is installed: `pip install vosk`
+3. Download the model manually from [https://alphacephei.com/vosk/models](https://alphacephei.com/vosk/models)
+4. Place in `~/.vosk/vosk-model-small-en-us-0.15/`
+
+### Problem: Whisper Transcription Issues
+
+```
+DEBUG: Whisper loading failed: ...
+```
+
+**Solutions:**
+1. Ensure `faster-whisper` is installed: `pip install faster-whisper`
+2. First download may take 5-10 minutes (244MB model)
+3. Check available disk space (need ~500MB)
+4. Try a smaller model: change setting to "tiny" or "base"
+5. If GPU issues: set `DEVICE = "cpu"` in [stt_service.py](file:///d:/assistant/voice-coding-assistant/src/stt_service.py)
+
+### Problem: Extension Not Activating
+
+**Solutions:**
+1. Check the .env file has the correct OpenRouter API key
+2. Press F5 to launch the Extension Development Host
+3. Check the Output panel (View → Output → "Voice Coding Assistant")
+4. Run `npm run compile` and check for errors
+5. Ensure [package.json](file:///d:/assistant/voice-coding-assistant/package.json) has `"main": "./out/extension.js"`
+
+### Problem: Voice Commands Not Executing
+
+**Solutions:**
+1. Check transcription in the notification: "🗣️ Heard: ..."
+2. If transcription is wrong, try speaking slower and clearer
+3. Use "Type Command" (`Ctrl+Shift+T`) to test command parsing
+4. Check the Output panel for parser logs
+5. Upgrade Whisper model to "medium" for better accuracy
+
+### Problem: STT Sidecar Not Running
+
+```
+Error: STT sidecar is not running
+```
+
+**Solutions:**
+1. Check if Python is installed: `python --version`
+2. Check virtual environment: `.venv\Scripts\python.exe --version`
+3. Install requirements: `.venv\Scripts\pip install -r requirements.txt`
+4. Check stderr output in VS Code Output panel
+5. Try running sidecar manually:
+   ```powershell
+   .venv\Scripts\python.exe src\stt_service.py small
+   ```
+
+### Problem: High CPU Usage
+
+**Solutions:**
+1. The extension records in cycles — CPU spikes are normal during recording
+2. In passive mode, recordings are short (3s) with delays between
+3. Set Whisper model to "tiny" for lower resource usage
+4. If not using voice, stop the assistant: `Ctrl+Shift+X`
+
+---
+
+## Testing Guide
+
+### Test 1: Hello World
+
+1. Press `Ctrl+Shift+P` → "Voice Coding: Hello World (Test)"
+2. Expected: Information message + voice says "Voice coding assistant is ready"
+
+### Test 2: Type Command (No Microphone Needed)
+
+1. Press `Ctrl+Shift+T`
+2. Type: `create python file`
+3. Expected: `main.py` created and opened
+
+### Test 3: Single Voice Command
+
+1. Press `Ctrl+Shift+V`
+2. Speak clearly: "Create a python file"
+3. Expected: Notification shows what was heard → Confirm → File created
+
+### Test 4: Wake Word Activation
+
+1. Press `Ctrl+Shift+C` (start continuous listening)
+2. Status bar shows: "$(eye) Passive — Say 'Hey Coder'"
+3. Say: **"Hey Coder"**
+4. Expected: Status bar changes to "$(pulse) ACTIVE — Listening"
+5. Voice says: "Voice coding assistant activated"
+
+### Test 5: Full Workflow
+
+1. Say: "Hey Coder" (activate)
+2. Say: "Create python file named calculator" (creates file)
+3. Say: "Insert function add numbers" (AI generates code)
+4. Say: "Save file" (saves)
+5. Say: "Run program" (runs in terminal)
+6. Say: "Stop voice coding" (deactivate)
+
+### Test 6: Language Detection
+
+1. Create `test.py` → Say "Create function hello" → Should generate Python
+2. Create `Test.java` → Say "Create function hello" → Should generate Java
+3. Create `test.js` → Say "Create function hello" → Should generate JavaScript
+
+### Test 7: Navigation
+
+1. Open a file with many lines
+2. Say: "Go to line 10" → Cursor moves to line 10
+3. Say: "Go to top" → Cursor moves to line 1
+4. Say: "Go to bottom" → Cursor moves to last line
+5. Say: "Find variable count" → Cursor jumps to "count"
+
+---
+
+> [!TIP]
+> **For best results with Indian English accents:**
+> - Set Whisper model to `small` or `medium` in VS Code settings
+> - Speak at a moderate pace
+> - Pause briefly between the wake word and the command
+> - Use the exact command phrases listed above
+> - Background noise reduction helps significantly

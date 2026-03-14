@@ -48,7 +48,7 @@ import * as path from 'path';
 import * as os from 'os';
 
 import { recordAudio, cleanupAudioFile } from './voiceRecorder';
-import { transcribeAudio, WhisperModelSize } from './speechToText';
+import { transcribeAudio, TranscriptionMode } from './speechToText';
 import { checkWakeWord, extractCommandAfterWake, isOnlyWakeWord } from './wakeWordDetector';
 import { speak, speakAsync, Messages } from './voiceFeedback';
 
@@ -313,15 +313,14 @@ async function passiveLoop(): Promise<void> {
         try {
             // Record a short clip
             const config = vscode.workspace.getConfiguration('voiceCodingAssistant');
-            const whisperModel = config.get<string>('whisperModel', 'base') as WhisperModelSize;
 
             await recordAudio({
                 durationMs: PASSIVE_RECORD_DURATION_MS,
                 outputPath: audioPath,
             });
 
-            // Transcribe
-            const result = await transcribeAudio(audioPath, whisperModel);
+            // Transcribe in PASSIVE mode (for wake-word detection)
+            const result = await transcribeAudio(audioPath, 'passive');
 
             if (result.text && result.text.trim().length > 0) {
                 console.log('[ModeManager] Passive heard:', result.text);
@@ -402,7 +401,6 @@ async function activeLoop(): Promise<void> {
         try {
             const config = vscode.workspace.getConfiguration('voiceCodingAssistant');
             const recordingDuration = config.get<number>('recordingDurationMs', 7000);
-            const whisperModel = config.get<string>('whisperModel', 'base') as WhisperModelSize;
 
             // Record
             await recordAudio({
@@ -410,8 +408,8 @@ async function activeLoop(): Promise<void> {
                 outputPath: audioPath,
             });
 
-            // Transcribe
-            const result = await transcribeAudio(audioPath, whisperModel);
+            // Transcribe in ACTIVE mode (accurate for commands)
+            const result = await transcribeAudio(audioPath, 'active');
 
             if (!result.text || result.text.trim().length === 0) {
                 // No speech detected — continue listening

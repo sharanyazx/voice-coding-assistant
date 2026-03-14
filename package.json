@@ -114,24 +114,10 @@
           "default": 7000,
           "description": "Recording duration for active commands in ms (default: 7000)"
         },
-        "voiceCodingAssistant.whisperModel": {
+        "voiceCodingAssistant.deepgramApiKey": {
           "type": "string",
-          "default": "base",
-          "enum": [
-            "tiny",
-            "base",
-            "small",
-            "medium",
-            "large"
-          ],
-          "enumDescriptions": [
-            "Tiny (~39M) — Fastest, least accurate",
-            "Base (~74M) — Good balance for English",
-            "Small (~244M) — Better accent support",
-            "Medium (~769M) — Very good for all accents",
-            "Large (~1550M) — Best quality, slowest"
-          ],
-          "description": "Whisper model size. Larger = more accurate for accents but slower."
+          "default": "",
+          "description": "Deepgram API Key (required)"
         },
         "voiceCodingAssistant.voiceFeedbackEnabled": {
           "type": "boolean",
@@ -159,12 +145,26 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts"
+    "lint": "eslint src --ext ts",
+    "dev": "npm run watch & npm run lint & npm run vscode:prepublish",
+    "pretest": "npm run compile && npm run lint",
+    "test": "node ./node_modules/vscode/bin/test",
+    "package": "vsce package",
+    "build": "npm run compile",
+    "setup": "npm install"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
-    "typescript": "^5.3.3"
+    "@typescript-eslint/eslint-plugin": "^6.19.0",
+    "@typescript-eslint/parser": "^6.19.0",
+    "eslint": "^8.56.0",
+    "mocha": "^10.2.0",
+    "@types/mocha": "^10.0.6",
+    "@vscode/test-electron": "^2.3.8",
+    "typescript": "^5.3.3",
+    "ts-node": "^10.9.2",
+    "@vscode/vsce": "^2.22.0"
   },
   "dependencies": {
     "axios": "^1.6.5",

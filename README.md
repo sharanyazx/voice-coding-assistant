@@ -17,7 +17,7 @@ voice-coding-assistant/
 ├── src/
 │   ├── extension.ts          ← Main entry point (orchestrator)
 │   ├── voiceRecorder.ts      ← Microphone recording via SoX
-│   ├── speechToText.ts       ← Audio → Text via Whisper
+│   ├── speechToText.ts       ← Audio → Text via Deepgram Cloud API
 │   ├── commandParser.ts      ← Text → Structured command (the brain)
 │   ├── aiEngine.ts           ← AI code generation via OpenRouter
 │   └── vscodeController.ts   ← Execute actions in VS Code (the hands)
@@ -43,9 +43,9 @@ voice-coding-assistant/
 │    │  Records 16kHz mono WAV audio                      │
 │    │                                                    │
 │    ▼                                                    │
-│   📝 Whisper (speechToText.ts)                         │
+│   📝 Deepgram (speechToText.ts)                         │
 │    │  Converts speech → text                            │
-│    │  Handles all English accents                       │
+│    │  Lightning fast (< 300ms) and handles accents                       │
 │    │                                                    │
 │    ▼                                                    │
 │   🧠 Command Parser (commandParser.ts)                 │
@@ -74,7 +74,7 @@ voice-coding-assistant/
 | Module | File | What It Does |
 |--------|------|--------------|
 | **Voice Recorder** | [voiceRecorder.ts](file:///d:/assistant/voice-coding-assistant/src/voiceRecorder.ts) | Records audio from microphone using SoX (16kHz mono WAV) |
-| **Speech-to-Text** | [speechToText.ts](file:///d:/assistant/voice-coding-assistant/src/speechToText.ts) | Converts WAV audio to text using Whisper (Python subprocess) |
+| **Speech-to-Text** | [speechToText.ts](file:///d:/assistant/voice-coding-assistant/src/speechToText.ts) | Converts WAV audio to text using Deepgram Cloud API |
 | **Command Parser** | [commandParser.ts](file:///d:/assistant/voice-coding-assistant/src/commandParser.ts) | Interprets transcribed text into structured commands using regex patterns |
 | **AI Engine** | [aiEngine.ts](file:///d:/assistant/voice-coding-assistant/src/aiEngine.ts) | Sends prompts to OpenRouter API, returns generated/debugged code |
 | **VS Code Controller** | [vscodeController.ts](file:///d:/assistant/voice-coding-assistant/src/vscodeController.ts) | Executes VS Code actions: file ops, navigation, code insertion, terminal |
@@ -192,78 +192,30 @@ npm --version
 # Expected: 10.x.x or higher
 ```
 
-### STEP 2: Install Python
+### STEP 4: Get API Keys
 
-Python is required for Whisper speech recognition.
+1. **Deepgram (Speech-to-Text)**
+   - Go to: https://console.deepgram.com
+   - Sign up / Log in
+   - Create a project and API Key
 
-1. Download from: https://www.python.org/downloads/
-2. **IMPORTANT: Check "Add Python to PATH" during installation**
-3. Verify:
-```powershell
-python --version
-# Expected: Python 3.8 or higher
-```
-
-### STEP 3: Install SoX (Sound eXchange)
-
-SoX is required for microphone recording.
-
-1. Download from: https://sourceforge.net/projects/sox/files/sox/14.4.2/
-2. Download `sox-14.4.2-win32.exe` for Windows
-3. Install it
-4. **Add SoX to your PATH:**
-   - Open System Settings → Environment Variables
-   - Edit `Path` → Add `C:\Program Files (x86)\sox-14-4-2\` (or wherever you installed it)
-5. Restart VS Code
-6. Verify:
-```powershell
-sox --version
-# Expected: sox: SoX v14.4.2
-```
-
-### STEP 4: Install FFmpeg
-
-FFmpeg is required by Whisper for audio processing.
-
-1. Download from: https://ffmpeg.org/download.html
-   - Or use: https://www.gyan.dev/ffmpeg/builds/ (Windows builds)
-2. Extract the archive
-3. **Add FFmpeg `bin` folder to PATH** (e.g., `C:\ffmpeg\bin`)
-4. Verify:
-```powershell
-ffmpeg -version
-# Expected: ffmpeg version X.X.X
-```
-
-### STEP 5: Install Whisper
-
-```powershell
-pip install openai-whisper
-```
-
-Verify:
-```powershell
-python -c "import whisper; print(whisper.__version__)"
-# Expected: A version number (e.g., 20231117)
-```
-
-### STEP 6: Get OpenRouter API Key
-
-1. Go to: https://openrouter.ai
+2. **OpenRouter (AI Code Gen)**
+   - Go to: https://openrouter.ai
 2. Sign up / Log in
 3. Go to: https://openrouter.ai/keys
 4. Click "Create Key"
 5. Copy the key
 
-### STEP 7: Configure the Extension
+### STEP 5: Configure the Extension
 
 Edit the `.env` file at `d:\assistant\voice-coding-assistant\.env`:
 
 ```env
+DEEPGRAM_API_KEY=your-deepgram-key-here
 OPENROUTER_API_KEY=sk-or-v1-your-key-here
 ```
 
-### STEP 8: Install Dependencies
+### STEP 6: Install Dependencies
 
 ```powershell
 cd d:\assistant\voice-coding-assistant
@@ -272,7 +224,7 @@ npm install
 
 **Expected result:** `node_modules/` folder is created with all packages.
 
-### STEP 9: Compile the Extension
+### STEP 7: Compile the Extension
 
 ```powershell
 npm run compile
@@ -284,7 +236,7 @@ npm run compile
 
 ## 🚀 Running the Extension
 
-### STEP 10: Launch in Debug Mode
+### STEP 8: Launch in Debug Mode
 
 1. Open the project in VS Code: `d:\assistant\voice-coding-assistant`
 2. Press **F5** (or go to Run → Start Debugging)
@@ -294,7 +246,7 @@ npm run compile
 > [!NOTE]
 > **Extension Development Host** is a separate VS Code instance where your extension runs. Any changes you make in the extension code require restarting this host (press F5 again).
 
-### STEP 11: Test the Extension
+### STEP 9: Test the Extension
 
 In the Extension Development Host window:
 
@@ -329,7 +281,7 @@ In the Extension Development Host window:
 1. Make sure your microphone is connected and enabled
 2. Press **Ctrl+Shift+V** (or Command Palette → "Voice Coding: Start Listening")
 3. Speak: **"Create a python file"**
-4. Wait for Whisper transcription
+4. Wait for Deepgram transcription
 5. Click **"Execute"** when prompted
 6. **Expected:** `main.py` is created
 
@@ -375,15 +327,14 @@ In the Extension Development Host window:
 
 ### Speech Recognition Failing
 
-**Symptoms:** "Could not detect speech" or Whisper errors
+**Symptoms:** "Could not detect speech" or Deepgram errors
 
 **Solution:**
-1. Verify Whisper: `python -c "import whisper; print('OK')"`
-2. Verify FFmpeg: `ffmpeg -version`
-3. Try a larger Whisper model (Settings → whisperModel → "small" or "medium")
-4. Speak more clearly and closer to the microphone
-5. Record for longer (Settings → recordingDurationMs → 10000)
-6. Use the **"Type Command"** fallback in the meantime
+1. Verify you have internet access (Cloud API requires it).
+2. Check your Deepgram API Key in `.env` or settings.
+3. Speak more clearly and closer to the microphone.
+4. Record for longer (Settings → recordingDurationMs → 10000)
+5. Use the **"Type Command"** fallback in the meantime.
 
 ### AI Not Responding
 
@@ -440,7 +391,7 @@ Open VS Code Settings (Ctrl+,) and search for "Voice Coding":
 |---------|---------|-------------|
 | `openRouterModel` | `openai/gpt-3.5-turbo` | AI model for code generation |
 | `recordingDurationMs` | `7000` | Recording duration (milliseconds) |
-| `whisperModel` | `base` | Whisper model size (tiny/base/small/medium/large) |
+| `deepgramApiKey` | `""` | Deepgram API Key (can also be in .env) |
 
 ### Recommended Models
 
@@ -454,21 +405,7 @@ Open VS Code Settings (Ctrl+,) and search for "Voice Coding":
 
 ---
 
-## 🌍 Accent Support
 
-Whisper handles these English accents well:
-
-| Accent | Whisper Model Recommendation |
-|--------|------------------------------|
-| **American English** | `base` model works well |
-| **British English** | `base` model works well |
-| **Indian English** | Use `small` or `medium` for best results |
-| **Australian English** | `base` model works well |
-
-> [!TIP]
-> If Whisper is struggling with your accent, upgrade the model size in Settings. `small` and `medium` significantly improve accuracy for non-standard accents.
-
----
 
 ## 🏗️ How Each Module Works
 
@@ -480,20 +417,20 @@ recordAudio(config) → Promise<RecordingResult>
 
 - Spawns SoX as a subprocess
 - On Windows: uses `-t waveaudio default` to access microphone
-- Records at 16kHz, mono, 16-bit WAV (what Whisper expects)
+- Records at 16kHz, mono, 16-bit WAV (what Deepgram expects)
 - Returns the file path, duration, and file size
 - Automatically cleans up temp files after use
 
-### 2. speechToText.ts — Whisper Integration
+### 2. speechToText.ts — Deepgram Integration
 
 ```
-transcribeAudio(audioFilePath, modelSize) → Promise<TranscriptionResult>
+transcribeAudio(audioFilePath, mode) → Promise<TranscriptionResult>
 ```
 
-- Spawns a Python subprocess
-- Python script loads Whisper model and transcribes the audio
-- Returns JSON with transcribed text and detected language
-- Handles Python/Whisper/FFmpeg installation errors gracefully
+- Calls Deepgram's Cloud API (`nova-2` model)
+- Converts WAV audio to text directly using Axios
+- Extremely fast (< 500ms latency)
+- Returns JSON with transcribed text
 
 ### 3. commandParser.ts — The Brain
 
